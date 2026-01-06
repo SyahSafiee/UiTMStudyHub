@@ -21,9 +21,21 @@ class RegisteredUserController extends Controller
     public function store(Request $request): Response
     {
         $request->validate([
-            'name' => ['required', 'string', 'max:255'],
-            'email' => ['required', 'string', 'lowercase', 'email', 'max:255', 'unique:'.User::class],
-            'password' => ['required', 'confirmed', Rules\Password::defaults()],
+        'name' => ['required', 'string', 'max:255'],
+        'email' => [
+            'required', 
+            'string', 
+            'lowercase', 
+            'email', 
+            'max:255', 
+            'unique:'.User::class,
+            // THIS LINE ENFORCES THE DOMAIN
+            'regex:/^[a-zA-Z0-9._%+-]+@student\.uitm\.edu\.my$/i' 
+        ],
+        'password' => ['required', 'confirmed', Rules\Password::defaults()],
+        ], [
+            // THIS IS YOUR CUSTOM MESSAGE
+            'email.regex' => 'Please use your @student.uitm.edu.my email address.',
         ]);
 
         $user = User::create([
