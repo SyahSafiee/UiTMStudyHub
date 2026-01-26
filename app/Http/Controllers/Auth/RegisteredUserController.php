@@ -23,14 +23,14 @@ class RegisteredUserController extends Controller
         $request->validate([
         'name' => ['required', 'string', 'max:255'],
         'email' => [
-            'required', 
-            'string', 
-            'lowercase', 
-            'email', 
-            'max:255', 
+            'required',
+            'string',
+            'lowercase',
+            'email',
+            'max:255',
             'unique:'.User::class,
             // THIS LINE ENFORCES THE DOMAIN
-            'regex:/^[a-zA-Z0-9._%+-]+@student\.uitm\.edu\.my$/i' 
+            'regex:/^[a-zA-Z0-9._%+-]+@student\.uitm\.edu\.my$/i'
         ],
         'password' => ['required', 'confirmed', Rules\Password::defaults()],
         ], [
@@ -49,5 +49,12 @@ class RegisteredUserController extends Controller
         Auth::login($user);
 
         return response()->noContent();
+    }
+    /**
+    * Display the registration view.
+    */
+    public function create(): \Illuminate\View\View
+    {
+        return view('auth.register');
     }
 }

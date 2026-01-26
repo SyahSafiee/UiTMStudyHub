@@ -45,6 +45,7 @@ The content is organized as follows:
 .env.example
 .gitattributes
 .gitignore
+app/Http/Controllers/Admin/AdminDashboardController.php
 app/Http/Controllers/Api/AdminController.php
 app/Http/Controllers/Api/FlashcardDeckController.php
 app/Http/Controllers/Api/ResourceController.php
@@ -55,6 +56,8 @@ app/Http/Controllers/Auth/PasswordResetLinkController.php
 app/Http/Controllers/Auth/RegisteredUserController.php
 app/Http/Controllers/Auth/VerifyEmailController.php
 app/Http/Controllers/Controller.php
+app/Http/Controllers/ProfileController.php
+app/Http/Controllers/SettingsController.php
 app/Http/Middleware/AdminMiddleware.php
 app/Http/Middleware/EnsureEmailIsVerified.php
 app/Http/Requests/Auth/LoginRequest.php
@@ -93,6 +96,7 @@ database/migrations/2025_12_06_195719_create_flashcards_table.php
 database/migrations/2025_12_06_195719_create_resource_ratings_table.php
 database/migrations/2025_12_06_195720_create_resource_comments_table.php
 database/migrations/2025_12_07_055406_create_personal_access_tokens_table.php
+database/seeders/AdminUserSeeder.php
 database/seeders/DatabaseSeeder.php
 package.json
 phpunit.xml
@@ -103,13 +107,19 @@ resources/js/app.js
 resources/js/bootstrap.js
 resources/views/.gitkeep
 resources/views/admin/dashboard.blade.php
+resources/views/auth/login.blade.php
 resources/views/auth/register.blade.php
+resources/views/emails/resource_approved.blade.php
 resources/views/flashcards/create.blade.php
+resources/views/flashcards/index.blade.php
+resources/views/flashcards/study.blade.php
 resources/views/layouts/app.blade.php
 resources/views/library.blade.php
+resources/views/profile/edit.blade.php
 resources/views/resources/create.blade.php
 resources/views/resources/index.blade.php
 resources/views/resources/my-uploads.blade.php
+resources/views/settings/edit.blade.php
 resources/views/welcome.blade.php
 routes/api.php
 routes/auth.php
@@ -130,407 +140,760 @@ vite.config.js
 <files>
 This section contains the contents of the repository's files.
 
-<file path="postcss.config.js">
-export default {
-    plugins: {
-        '@tailwindcss/postcss': {}, // Change this line
-        autoprefixer: {},
-    },
-};
+<file path="app/Http/Controllers/Admin/AdminDashboardController.php">
+<?php
+
+namespace App\Http\Controllers\Admin;
+
+use App\Http\Controllers\Controller;
+use App\Models\Resource;
+use App\Models\User;
+use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Mail; // Wajib ada untuk hantar email
+
+class AdminDashboardController extends Controller
+{
+    /**
+     * Display the Admin Dashboard with pending resources.
+     */
+    public function index()
+    {
+        // Ambil resource yang status 'pending' bersama info uploader (user)
+        $pendingResources = Resource::with('user')
+            ->where('status', 'pending')
+            ->latest()
+            ->get();
+
+        // Data untuk dashboard cards
+        $stats = [
+            'pending'     => $pendingResources->count(),
+            'approved'    => Resource::where('status', 'approved')->count(),
+            'total_files' => Resource::count(),
+            'total_users' => User::count(),
+        ];
+
+        return view('admin.dashboard', compact('pendingResources', 'stats'));
+    }
+
+    /**
+     * Update the status of a resource (Approve/Reject).
+     */
+    public function updateStatus(Request $request, $id)
+    {
+        $request->validate([
+            'status' => 'required|in:approved,rejected',
+        ]);
+
+        // Cari resource. Guna 'with' user supaya kita boleh dapat email dia
+        $resource = Resource::with('user')->findOrFail($id);
+        
+        $resource->update([
+            'status' => $request->status
+        ]);
+
+        // =========================================================
+        // ONE-FILE EMAIL SOLUTION (Direct HTML)
+        // =========================================================
+        if ($request->status === 'approved' && $resource->user && $resource->user->email) {
+            
+            $userName = $resource->user->name;
+            $userEmail = $resource->user->email;
+            $title = $resource->title;
+
+            // 1. Design HTML Email secara terus
+            $htmlContent = "
+                <div style='font-family: Arial, sans-serif; padding: 20px; background-color: #f4f6f9;'>
+                    <div style='max-width: 600px; margin: 0 auto; background: white; padding: 30px; border-radius: 12px; border: 1px solid #e2e8f0; box-shadow: 0 4px 6px rgba(0,0,0,0.05);'>
+                        
+                        <h2 style='color: #012E6F; margin-top: 0;'>🎉 Resource Approved!</h2>
+                        <hr style='border: 0; border-top: 1px solid #eee; margin: 20px 0;'>
+                        
+                        <p style='color: #475569;'>Hi <strong>{$userName}</strong>,</p>
+                        
+                        <p style='color: #475569;'>Good news! Your academic resource has been reviewed and is now live in the library.</p>
+                        
+                        <div style='background-color: #f8fafc; padding: 15px; border-left: 4px solid #753895; margin: 20px 0;'>
+                            <p style='margin: 0; color: #1e293b;'><strong>Title:</strong> {$title}</p>
+                            <p style='margin: 5px 0 0 0; color: #16a34a;'><strong>Status:</strong> APPROVED</p>
+                        </div>
+
+                        <p style='color: #475569;'>Other students can now benefit from your contribution. Thank you for sharing!</p>
+                        
+                        <div style='margin-top: 30px; border-top: 1px solid #e2e8f0; padding-top: 20px;'>
+                            <p style='color: #94a3b8; font-size: 12px;'>
+                                Regards,<br>
+                                <strong>UiTM StudyHub Admin</strong>
+                            </p>
+                        </div>
+                    </div>
+                </div>
+            ";
+
+            // 2. Hantar guna Mail::html()
+            try {
+                Mail::html($htmlContent, function($message) use ($userEmail) {
+                    $message->to($userEmail)
+                            ->subject('UiTM StudyHub: Your Resource is Approved!');
+                });
+            } catch (\Exception $e) {
+                // Diamkan error supaya dashboard tak sangkut kalau Gmail block
+                // \Log::error('Email Error: ' . $e->getMessage());
+            }
+        }
+        // =========================================================
+
+        $message = $request->status === 'approved'
+            ? '✅ Resource approved & notification email sent!'
+            : '❌ Resource has been rejected.';
+
+        return back()->with('success', $message);
+    }
+}
 </file>
 
-<file path="resources/views/admin/dashboard.blade.php">
-@extends('layouts.app')
+<file path="app/Http/Controllers/ProfileController.php">
+<?php
 
-@section('content')
-<div class="mb-8">
-    <h2 class="text-3xl font-bold text-uitm-blue">Admin Dashboard</h2>
-    <p class="text-gray-500">Overview of platform activity and pending approvals.</p>
-</div>
+namespace App\Http\Controllers;
 
-<div class="grid grid-cols-1 md:grid-cols-4 gap-6 mb-10">
-    <div class="bg-white p-6 rounded-2xl border border-gray-100 shadow-sm">
-        <p class="text-xs font-bold text-gray-400 uppercase tracking-wider">Total Users</p>
-        <p class="text-3xl font-black text-uitm-blue mt-2">1,284</p>
-    </div>
-    <div class="bg-white p-6 rounded-2xl border border-gray-100 shadow-sm">
-        <p class="text-xs font-bold text-gray-400 uppercase tracking-wider">Pending Files</p>
-        <p class="text-3xl font-black text-orange-500 mt-2">12</p>
-    </div>
-    </div>
+use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Hash;
+use Illuminate\Validation\Rule;
 
-<div class="bg-white rounded-3xl border border-gray-100 shadow-sm overflow-hidden">
-    <div class="p-6 border-b border-gray-50 bg-gray-50/50">
-        <h3 class="font-bold text-gray-800">Pending Resource Approvals</h3>
-    </div>
-    <table class="w-full text-left">
-        <thead class="bg-gray-50 text-gray-400 text-[10px] uppercase font-bold">
-            <tr>
-                <th class="px-6 py-4">Resource Title</th>
-                <th class="px-6 py-4">Uploader</th>
-                <th class="px-6 py-4">Action</th>
-            </tr>
-        </thead>
-        <tbody class="divide-y divide-gray-100">
-            <tr>
-                <td class="px-6 py-4 font-semibold text-gray-700">Calculus II Study Guide</td>
-                <td class="px-6 py-4 text-sm text-gray-500">ali@student.uitm.edu.my</td>
-                <td class="px-6 py-4 flex gap-2">
-                    <button class="bg-green-500 text-white px-4 py-1.5 rounded-lg text-xs font-bold">Approve</button>
-                    <button class="bg-red-500 text-white px-4 py-1.5 rounded-lg text-xs font-bold">Reject</button>
-                </td>
-            </tr>
-        </tbody>
-    </table>
-</div>
-@endsection
+class ProfileController extends Controller
+{
+    /**
+     * Show the profile edit form.
+     */
+    public function edit(Request $request)
+    {
+        return view('profile.edit', [
+            'user' => $request->user(),
+        ]);
+    }
+
+    /**
+     * Update the user's profile information.
+     */
+    public function update(Request $request)
+    {
+        // 1. Validate Input
+        $validated = $request->validate([
+            'name' => ['required', 'string', 'max:255'],
+            'faculty' => ['required', 'string', 'max:100'],     // Wajib isi Faculty
+            'course_code' => ['required', 'string', 'max:20'],  // Wajib isi Course Code
+            'email' => [
+                'required',
+                'email',
+                'max:255',
+                Rule::unique('users')->ignore($request->user()->user_id, 'user_id') // Ignore current user's email check
+            ],
+        ]);
+
+        // 2. Update Data User
+        $request->user()->fill($validated);
+
+        // Kalau user tukar email, reset verification (Optional, terpulang nak on ke tak)
+        if ($request->user()->isDirty('email')) {
+            $request->user()->email_verified_at = null;
+        }
+
+        $request->user()->save();
+
+        return back()->with('success', 'Profile updated successfully!');
+    }
+}
 </file>
 
-<file path="resources/views/auth/register.blade.php">
-<div class="mt-4">
-    <label class="block font-bold text-uitm-blue text-sm mb-2">UiTM Student Email</label>
-    <input type="email" name="email" value="{{ old('email') }}" 
-           class="w-full border-gray-300 rounded-xl focus:ring-uitm-violet focus:border-uitm-violet shadow-sm">
-    
-    @error('email')
-        <p class="text-red-500 text-xs mt-2 font-bold italic">
-            {{ $message }}
-        </p>
-    @enderror
-</div>
+<file path="app/Http/Controllers/SettingsController.php">
+<?php
+
+namespace App\Http\Controllers;
+
+use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Hash;
+use Illuminate\Validation\Rules\Password;
+use Illuminate\Support\Facades\Auth;
+
+class SettingsController extends Controller
+{
+    /**
+     * Show the settings page.
+     */
+    public function edit()
+    {
+        return view('settings.edit');
+    }
+
+    /**
+     * Update the user's password.
+     */
+    public function updatePassword(Request $request)
+    {
+        $validated = $request->validate([
+            'current_password' => ['required', 'current_password'], // Laravel auto check password lama
+            'password' => ['required', 'confirmed', Password::defaults()], // Password baru
+        ]);
+
+        $request->user()->update([
+            'password' => Hash::make($validated['password']),
+        ]);
+
+        return back()->with('success', 'Password changed successfully!');
+    }
+
+    /**
+     * Delete the user's account.
+     */
+    public function destroy(Request $request)
+    {
+        $request->validate([
+            'password' => ['required', 'current_password'],
+        ]);
+
+        $user = $request->user();
+
+        Auth::logout();
+
+        $user->delete();
+
+        $request->session()->invalidate();
+        $request->session()->regenerateToken();
+
+        return redirect('/login')->with('success', 'Your account has been deleted.');
+    }
+}
 </file>
 
-<file path="resources/views/flashcards/create.blade.php">
-@extends('layouts.app')
+<file path="database/seeders/AdminUserSeeder.php">
+<?php
 
-@section('content')
-<div class="max-w-4xl mx-auto">
-    <h2 class="text-3xl font-bold text-uitm-blue mb-8">Create New Deck</h2>
+namespace Database\Seeders;
 
-    <div class="grid grid-cols-1 md:grid-cols-2 gap-10">
-        <div class="bg-white p-8 rounded-3xl shadow-sm border border-gray-100">
-            <div class="space-y-4">
-                <div>
-                    <label class="block text-sm font-bold text-gray-700 mb-2">Front (Question)</label>
-                    <textarea class="w-full border-gray-200 rounded-xl p-4 focus:ring-uitm-violet" rows="3" placeholder="Enter your question..."></textarea>
-                </div>
-                <div>
-                    <label class="block text-sm font-bold text-gray-700 mb-2">Back (Answer)</label>
-                    <textarea class="w-full border-gray-200 rounded-xl p-4 focus:ring-uitm-violet" rows="3" placeholder="Enter the answer..."></textarea>
-                </div>
-                <button class="w-full bg-uitm-violet text-white py-4 rounded-xl font-bold">Add to Deck</button>
-            </div>
-        </div>
+use Illuminate\Database\Seeder;
+use App\Models\User;
+use Illuminate\Support\Facades\Hash;
 
-        <div x-data="{ flipped: false }" class="perspective-1000">
-            <p class="text-center text-sm font-bold text-gray-400 mb-4">Click card to preview flip</p>
-            <div @click="flipped = !flipped" 
-                 :class="flipped ? '[transform:rotateY(180deg)]' : ''"
-                 class="relative w-full h-64 transition-all duration-500 preserve-3d cursor-pointer">
-                
-                <div class="absolute inset-0 bg-uitm-blue text-white rounded-3xl flex items-center justify-center p-8 backface-hidden">
-                    <span class="text-xl font-bold text-center">Your Question Will Appear Here</span>
-                </div>
-
-                <div class="absolute inset-0 bg-uitm-gold text-uitm-blue rounded-3xl flex items-center justify-center p-8 [transform:rotateY(180deg)] backface-hidden">
-                    <span class="text-xl font-bold text-center">Your Answer Will Appear Here</span>
-                </div>
-            </div>
-        </div>
-    </div>
-</div>
-@endsection
+class AdminUserSeeder extends Seeder
+{
+    public function run(): void
+    {
+        User::create([
+            'name' => 'System Admin',
+            'email' => 'admin@uitm.edu.my', // Admin email
+            'password' => Hash::make('UiTMHub08!'), // Admin password
+            'role' => 'admin', // Set role as admin
+        ]);
+    }
+}
 </file>
 
-<file path="resources/views/layouts/app.blade.php">
+<file path="resources/views/auth/login.blade.php">
 <!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>UiTM StudyHub</title>
+    <title>Login - UiTM StudyHub</title>
     @vite(['resources/css/app.css', 'resources/js/app.js'])
 </head>
-<body class="bg-gray-50 flex">
+<body class="bg-gray-100 min-h-screen flex items-center justify-center">
 
-    <aside class="w-64 bg-uitm-blue text-white min-h-screen fixed flex flex-col shadow-xl">
-        <div class="p-8">
-            <h1 class="font-extrabold text-2xl tracking-tighter">UiTM <span class="text-uitm-gold">StudyHub</span></h1>
-            <p class="text-[10px] uppercase tracking-widest text-blue-200 mt-1">Collaborative Platform</p>
+    <div class="max-w-md w-full bg-white rounded-xl shadow-lg p-8">
+        <div class="text-center mb-8">
+            <h1 class="text-3xl font-extrabold text-[#003366]">UiTM <span class="text-[#FFCC00]">StudyHub</span></h1>
+            <p class="text-gray-500 mt-2">Please login to your account</p>
         </div>
 
-        <nav class="flex-1 px-4 space-y-2">
-            <a href="/library"
-            class="flex items-center gap-3 px-4 py-3 rounded-xl transition {{ request()->is('library') || request()->is('/') ? 'bg-white/10 border-l-4 border-uitm-gold font-bold text-white' : 'text-blue-100 hover:bg-white/5' }}">
-                Resource Library
-            </a>
-
-            <a href="/flashcards"
-            class="flex items-center gap-3 px-4 py-3 rounded-xl transition {{ request()->is('flashcards*') ? 'bg-white/10 border-l-4 border-uitm-gold font-bold text-white' : 'text-blue-100 hover:bg-white/5' }}">
-                Flashcards
-            </a>
-
-            <a href="{{ route('resources.my-uploads') }}"
-            class="flex items-center gap-3 px-4 py-3 rounded-xl transition {{ request()->is('my-uploads*') ? 'bg-white/10 border-l-4 border-uitm-gold font-bold text-white' : 'text-blue-100 hover:bg-white/5' }}">
-                My Uploads
-            </a>
-        </nav>
-
-        <div class="p-4 border-t border-blue-900/50">
-            <a href="/admin" class="flex items-center gap-3 px-4 py-3 rounded-xl text-blue-200 hover:text-white transition text-sm">
-                Admin Dashboard
-            </a>
-        </div>
-    </aside>
-
-    <main class="flex-1 ml-64 min-h-screen">
-        <header class="bg-white border-b border-gray-100 p-6 flex justify-between items-center sticky top-0 z-10">
-            <form action="{{ route('resources.index') }}" method="GET" class="w-1/2 relative">
-                <input type="text"
-                    name="search"
-                    value="{{ request('search') }}"
-                    placeholder="Search Course Code (e.g. CSC101)..."
-                    class="w-full bg-gray-50 border-gray-200 rounded-xl px-4 py-2 text-sm focus:ring-uitm-blue focus:border-uitm-blue border-gray-200">
-            </form>
-            <div class="flex items-center gap-4">
-                <span class="text-sm font-semibold text-gray-700">UiTM Student</span>
-                <div class="w-10 h-10 bg-uitm-violet rounded-full flex items-center justify-center text-white font-bold">
-                    S
-                </div>
-            </div>
-        </header>
-
-        <div class="p-8">
-            @yield('content')
-        </div>
-    </main>
-</body>
-</html>
-</file>
-
-<file path="resources/views/library.blade.php">
-@extends('layouts.app')
-
-@section('content')
-<div class="flex justify-between items-end mb-10">
-    <div>
-        <h2 class="text-3xl font-extrabold text-uitm-blue">Resource Library</h2>
-        <p class="text-gray-500 font-medium">Find notes and materials for your faculty</p>
-    </div>
-    <button class="bg-uitm-violet text-white px-6 py-3 rounded-xl font-bold shadow-lg shadow-purple-200 hover:-translate-y-1 transition-all">
-        + Upload New
-    </button>
-</div>
-
-<div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-    @forelse($resources as $res)
-        <div class="bg-white border border-gray-100 rounded-3xl p-6 shadow-sm hover:shadow-xl transition-all group">
-            <div class="flex justify-between items-start mb-4">
-                <span class="bg-blue-50 text-uitm-blue text-[10px] font-black px-3 py-1 rounded-full uppercase tracking-widest">
-                    {{ $res->course_code }}
-                </span>
-                <span class="text-gray-400 text-xs font-bold uppercase">
-                    {{ $res->file_type ?? 'PDF' }}
-                </span>
-            </div>
-
-            <h3 class="text-xl font-bold text-gray-800 mb-2 group-hover:text-uitm-violet transition-colors">
-                {{ $res->title }}
-            </h3>
-            <p class="text-gray-500 text-sm mb-6">{{ $res->faculty }}</p>
-            
-            <div class="flex items-center justify-between mt-auto">
-                <div class="flex items-center gap-1">
-                    <span class="text-uitm-gold text-sm">★★★★★</span>
-                    <span class="text-xs font-bold text-gray-400">{{ $res->rating ?? '5.0' }}</span>
-                </div>
-                
-                <a href="{{ Storage::url($res->file_path) }}" target="_blank" class="bg-uitm-blue text-white px-4 py-2 rounded-lg text-xs font-bold">
-                    Download
-                </a>
-            </div>
-            
-            <p class="text-[10px] text-gray-400 mt-4">Uploaded by: {{ $res->user->name }}</p>
-        </div>
-    @empty
-        <div class="col-span-3 py-20 text-center">
-            <p class="text-gray-400 italic">No resources available yet. Be the first to upload!</p>
-        </div>
-    @endforelse
-</div>
-@endsection
-</file>
-
-<file path="resources/views/resources/create.blade.php">
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <script src="https://cdn.tailwindcss.com"></script>
-    <title>Upload Resource</title>
-</head>
-<body class="bg-gray-50 flex items-center justify-center min-h-screen">
-    <div class="bg-white p-8 rounded-2xl shadow-lg w-full max-w-lg">
-        <h2 class="text-2xl font-bold mb-6 text-gray-800">Upload Academic Resource</h2>
-        
-        <form action="{{ route('resources.store') }}" method="POST" enctype="multipart/form-data">
-            @csrf
-            <div class="space-y-4">
-                <div>
-                    <label class="block text-sm font-medium text-gray-700">Title</label>
-                    <input type="text" name="title" class="w-full mt-1 p-2 border rounded-md" required>
-                </div>
-                <div class="grid grid-cols-2 gap-4">
-                    <div>
-                        <label class="block text-sm font-medium text-gray-700">Faculty</label>
-                        <input type="text" name="faculty" placeholder="e.g. FSKM" class="w-full mt-1 p-2 border rounded-md" required>
-                    </div>
-                    <div>
-                        <label class="block text-sm font-medium text-gray-700">Course Code</label>
-                        <input type="text" name="course_code" placeholder="e.g. ITT626" class="w-full mt-1 p-2 border rounded-md" required>
-                    </div>
-                </div>
-                <div>
-                    <label class="block text-sm font-medium text-gray-700">Select File (PDF/DOCX)</label>
-                    <input type="file" name="resource_file" class="w-full mt-1" required>
-                </div>
-                <button type="submit" class="w-full bg-blue-600 text-white py-3 rounded-xl font-bold hover:bg-blue-700 transition">
-                    Upload to Repository
-                </button>
-                <a href="{{ route('resources.index') }}" class="block text-center text-gray-400 text-sm">Cancel</a>
-            </div>
-        </form>
-    </div>
-</body>
-</html>
-</file>
-
-<file path="resources/views/resources/index.blade.php">
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <script src="https://cdn.tailwindcss.com"></script>
-    <title>UiTM StudyHub - Resources</title>
-</head>
-<body class="bg-gray-50">
-    <div class="max-w-6xl mx-auto p-6">
-        <div class="flex justify-between items-center mb-8">
-            <h1 class="text-3xl font-bold text-blue-900">UiTM StudyHub</h1>
-            <a href="{{ route('resources.create') }}" class="bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700">Upload New Resource</a>
-        </div>
-
-        @if(session('success'))
-            <div class="bg-green-100 border border-green-400 text-green-700 px-4 py-3 rounded mb-4">
-                {{ session('success') }}
+        @if ($errors->any())
+            <div class="mb-4 p-4 bg-red-50 text-red-600 rounded-lg text-sm">
+                <ul>
+                    @foreach ($errors->all() as $error)
+                        <li>{{ $error }}</li>
+                    @endforeach
+                </ul>
             </div>
         @endif
 
-        <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
-            @forelse($resources as $resource)
-                <div class="bg-white p-6 rounded-xl shadow-sm border border-gray-200">
-                    <span class="text-xs font-bold text-blue-500 uppercase">{{ $resource->course_code }}</span>
-                    <h3 class="text-xl font-semibold mt-2">{{ $resource->title }}</h3>
-                    <p class="text-gray-500 text-sm italic">Faculty of {{ $resource->faculty }}</p>
-                    <div class="mt-4 pt-4 border-t flex justify-between items-center">
-                        <span class="text-xs text-gray-400">By {{ $resource->user->name ?? 'User' }}</span>
-                        <a href="{{ asset('storage/' . $resource->file_url) }}" target="_blank" class="text-blue-600 font-medium">Download</a>
-                    </div>
-                </div>
-            @empty
-                <div class="col-span-3 text-center py-10">
-                    <p class="text-gray-500 italic">No resources available. Be the first to upload!</p>
-                </div>
-            @endforelse
+        <form method="POST" action="{{ route('login') }}">
+            @csrf
+
+            <div class="mb-4">
+                <label for="email" class="block text-sm font-medium text-gray-700 mb-1">Email Address</label>
+                <input id="email" type="email" name="email" value="{{ old('email') }}" required autofocus
+                    class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none transition">
+            </div>
+
+            <div class="mb-6">
+                <label for="password" class="block text-sm font-medium text-gray-700 mb-1">Password</label>
+                <input id="password" type="password" name="password" required
+                    class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none transition">
+            </div>
+
+            <button type="submit"
+                class="w-full bg-[#003366] text-white font-bold py-2 rounded-lg hover:bg-blue-900 transition duration-200">
+                Log In
+            </button>
+        </form>
+
+        <div class="mt-6 text-center text-sm text-gray-600">
+            Don't have an account?
+            <a href="{{ route('register') }}" class="text-blue-600 font-semibold hover:underline">Register here</a>
         </div>
+    </div>
+
+</body>
+</html>
+</file>
+
+<file path="resources/views/emails/resource_approved.blade.php">
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <title>Resource Approved</title>
+</head>
+<body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333;">
+    <div style="max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #eee; border-radius: 10px;">
+        <h2 style="color: #012E6F;">Congratulations, {{ $resource->user->name }}! 🎉</h2>
+        
+        <p>Your resource upload has been reviewed and <strong>APPROVED</strong> by the admin.</p>
+        
+        <div style="background-color: #f9f9f9; padding: 15px; border-radius: 5px; margin: 20px 0;">
+            <p style="margin: 0;"><strong>Title:</strong> {{ $resource->title }}</p>
+            <p style="margin: 0;"><strong>Course Code:</strong> {{ $resource->course_code }}</p>
+        </div>
+
+        <p>It is now live in the Library for other students to view and download.</p>
+        
+        <p style="margin-top: 30px;">
+            <a href="{{ route('resources.view', $resource->resources_id) }}"
+               style="background-color: #753895; color: white; padding: 10px 20px; text-decoration: none; border-radius: 5px;">
+                View Resource
+            </a>
+        </p>
+        
+        <hr style="margin-top: 40px; border: 0; border-top: 1px solid #eee;">
+        <p style="font-size: 12px; color: #999;">UiTM StudyHub Notification System</p>
     </div>
 </body>
 </html>
 </file>
 
-<file path="resources/views/resources/my-uploads.blade.php">
+<file path="resources/views/flashcards/index.blade.php">
 @extends('layouts.app')
 
 @section('content')
-<div class="flex justify-between items-end mb-8">
-    <div>
-        <h2 class="text-3xl font-bold text-uitm-blue">My Uploads</h2>
-        <p class="text-gray-500 font-medium">Manage and track your shared study materials</p>
+<div class="max-w-6xl mx-auto">
+    <div class="flex justify-between items-end mb-8">
+        <div>
+            <h2 class="text-3xl font-extrabold text-uitm-blue">Flashcard Decks</h2>
+            <p class="text-gray-500 font-medium">Review and study decks.</p>
+        </div>
+        
+        <a href="{{ route('flashcards.create') }}" class="bg-uitm-violet text-white px-6 py-3 rounded-xl font-bold shadow-lg shadow-purple-200 hover:-translate-y-1 transition-all flex items-center gap-2">
+            <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"></path></svg>
+            Create New Deck
+        </a>
     </div>
-    <a href="{{ route('resources.create') }}" class="bg-uitm-violet text-white px-6 py-3 rounded-xl font-bold shadow-lg hover:opacity-90 transition">
-        + Upload New
-    </a>
-</div>
 
-<div class="bg-white rounded-3xl border border-gray-100 shadow-sm overflow-hidden">
-    <table class="w-full text-left">
-        <thead class="bg-gray-50 text-gray-400 text-[10px] uppercase font-bold tracking-widest">
-            <tr>
-                <th class="px-8 py-5">Resource Details</th>
-                <th class="px-8 py-5">Date Uploaded</th>
-                <th class="px-8 py-5">Status</th>
-                <th class="px-8 py-5 text-right">Actions</th>
-            </tr>
-        </thead>
-        <tbody class="divide-y divide-gray-100">
-            @forelse($resources as $res)
-            <tr class="hover:bg-gray-50/50 transition">
-                <td class="px-8 py-5">
-                    <div class="font-bold text-gray-800">{{ $res->title }}</div>
-                    <div class="text-xs text-uitm-blue font-bold opacity-60">{{ $res->course_code }}</div>
-                </td>
-                <td class="px-8 py-5 text-sm text-gray-500">
-                    {{ $res->created_at->format('d M Y') }}
-                </td>
-                <td class="px-8 py-5">
-                    @if($res->status == 'approved')
-                        <span class="bg-green-100 text-green-700 px-3 py-1 rounded-full text-[10px] font-black uppercase">Approved</span>
-                    @elseif($res->status == 'pending')
-                        <span class="bg-amber-100 text-amber-700 px-3 py-1 rounded-full text-[10px] font-black uppercase">Pending</span>
-                    @else
-                        <span class="bg-red-100 text-red-700 px-3 py-1 rounded-full text-[10px] font-black uppercase">Rejected</span>
-                    @endif
-                </td>
-                <td class="px-8 py-5 text-right">
-                    <form action="{{ route('resources.destroy', $res->id) }}" method="POST" onsubmit="return confirm('Delete this resource?')">
-                        @csrf
-                        @method('DELETE')
-                        <button class="text-red-400 hover:text-red-600 transition font-bold text-xs">Delete</button>
-                    </form>
-                </td>
-            </tr>
-            @empty
-            <tr>
-                <td colspan="4" class="px-8 py-20 text-center">
-                    <div class="text-gray-400 italic">You haven't uploaded any resources yet.</div>
-                </td>
-            </tr>
-            @endforelse
-        </tbody>
-    </table>
+    @if(session('success'))
+        <div class="mb-6 p-4 bg-green-100 border-l-4 border-green-500 text-green-700 rounded shadow-sm font-bold">
+            {{ session('success') }}
+        </div>
+    @endif
+
+    <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+        @forelse($decks as $deck)
+            <div class="bg-white border border-gray-100 rounded-3xl p-6 shadow-sm hover:shadow-xl transition-all group relative overflow-hidden">
+                {{-- Decorative Background Circle --}}
+                <div class="absolute -right-4 -top-4 w-24 h-24 bg-purple-50 rounded-full group-hover:bg-purple-100 transition-colors"></div>
+
+                <div class="relative z-10">
+                    <div class="flex justify-between items-start mb-4">
+                        <span class="bg-blue-50 text-uitm-blue text-[10px] font-black px-3 py-1 rounded-full uppercase tracking-widest">
+                            {{ $deck->subject_code }}
+                        </span>
+                        <span class="text-gray-400 text-xs font-bold">
+                            {{ $deck->created_at->diffForHumans() }}
+                        </span>
+                    </div>
+
+                    <h3 class="text-xl font-bold text-gray-800 mb-1 group-hover:text-uitm-violet transition-colors">
+                        {{ $deck->deck_name }}
+                    </h3>
+
+                    {{-- CREATED BY SECTION --}}
+                    <p class="text-[11px] text-gray-400 mb-4 flex items-center gap-1">
+                        <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z"></path></svg>
+                        Created by: <span class="font-bold text-gray-600">{{ $deck->user->name ?? 'Unknown' }}</span>
+                    </p>
+                    
+                    <div class="flex items-center gap-2 text-gray-500 text-sm mb-6">
+                        <svg class="w-4 h-4 text-uitm-gold" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10"></path></svg>
+                        <span>{{ $deck->flashcards_count }} Cards</span>
+                    </div>
+                    
+                    <div class="border-t border-gray-50 pt-4 flex justify-between items-center mt-auto">
+                        <p class="text-[10px] text-gray-400 font-bold uppercase tracking-wider">Tap to Study</p>
+                        
+                        <a href="{{ route('flashcards.show', $deck->deck_id) }}" class="w-8 h-8 rounded-full bg-gray-50 flex items-center justify-center text-gray-400 group-hover:bg-uitm-violet group-hover:text-white transition-all z-20 relative">
+                            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14 5l7 7m0 0l-7 7m7-7H3"></path></svg>
+                        </a>
+                    </div>
+                </div>
+            </div>
+        @empty
+            <div class="col-span-3 py-20 text-center bg-white rounded-3xl border border-dashed border-gray-200">
+                <div class="w-16 h-16 bg-gray-50 rounded-full flex items-center justify-center mx-auto mb-4 text-gray-300">
+                    <svg class="w-8 h-8" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10"></path></svg>
+                </div>
+                <h3 class="font-bold text-gray-800">No Decks Yet</h3>
+                <p class="text-gray-400 text-sm mb-6">Create your first flashcard deck to start studying.</p>
+                <a href="{{ route('flashcards.create') }}" class="text-uitm-violet font-bold hover:underline">Create Now &rarr;</a>
+            </div>
+        @endforelse
+    </div>
 </div>
 @endsection
 </file>
 
-<file path="tailwind.config.js">
-/** @type {import('tailwindcss').Config} */
-export default {
-  content: [
-    "./resources/**/*.blade.php",
-    "./resources/**/*.js",
-    "./resources/**/*.vue",
-  ],
-  theme: {
-    extend: {
-      colors: {
-        'uitm-blue': '#012E6F',
-        'uitm-violet': '#753895',
-        'uitm-gold': '#FFD700',
-      },
-    },
-  },
-  plugins: [],
-}
+<file path="resources/views/flashcards/study.blade.php">
+@extends('layouts.app')
+
+@section('content')
+<div class="max-w-4xl mx-auto" x-data="studySession({{ $deck->flashcards->toJson() }})">
+    
+    {{-- Header --}}
+    <div class="flex justify-between items-center mb-8">
+        <div>
+            <a href="{{ route('flashcards.index') }}" class="text-gray-400 hover:text-uitm-blue text-sm font-bold flex items-center gap-1 mb-1 transition">
+                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"></path></svg>
+                Back to Library
+            </a>
+            <h2 class="text-3xl font-extrabold text-uitm-blue">{{ $deck->deck_name }}</h2>
+            <p class="text-gray-500 text-sm font-medium">{{ $deck->subject_code }} • <span x-text="cards.length"></span> Cards</p>
+        </div>
+        
+        <div class="text-right">
+            <span class="text-4xl font-black text-gray-200" x-text="currentIndex + 1"></span>
+            <span class="text-xl font-bold text-gray-300">/ <span x-text="cards.length"></span></span>
+        </div>
+    </div>
+
+    {{-- FLASHCARD CONTAINER --}}
+    <div class="perspective-1000 w-full h-96 cursor-pointer group" @click="flipCard()">
+        <div class="relative w-full h-full transition-all duration-500 preserve-3d shadow-xl rounded-3xl"
+             :class="flipped ? '[transform:rotateY(180deg)]' : ''">
+            
+            {{-- FRONT SIDE (Question) --}}
+            <div class="absolute inset-0 bg-white border border-gray-100 rounded-3xl p-10 flex flex-col items-center justify-center text-center backface-hidden">
+                <span class="text-xs font-bold text-gray-400 uppercase tracking-widest mb-4">Question</span>
+                <p class="text-2xl font-bold text-gray-800" x-text="currentCard.front_text"></p>
+                <p class="absolute bottom-6 text-xs text-gray-300 font-bold animate-pulse">Tap to flip</p>
+            </div>
+
+            {{-- BACK SIDE (Answer) --}}
+            <div class="absolute inset-0 bg-uitm-blue rounded-3xl p-10 flex flex-col items-center justify-center text-center backface-hidden [transform:rotateY(180deg)]">
+                <span class="text-xs font-bold text-blue-200 uppercase tracking-widest mb-4">Answer</span>
+                <p class="text-2xl font-bold text-white" x-text="currentCard.back_text"></p>
+            </div>
+            
+        </div>
+    </div>
+
+    {{-- NAVIGATION CONTROLS --}}
+    <div class="flex justify-center items-center gap-6 mt-10">
+        {{-- Prev Button --}}
+        <button @click="prevCard()" :disabled="currentIndex === 0"
+                class="w-14 h-14 rounded-full bg-white shadow-sm border border-gray-100 flex items-center justify-center text-gray-600 hover:bg-gray-50 hover:scale-105 transition disabled:opacity-50 disabled:cursor-not-allowed">
+            <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"></path></svg>
+        </button>
+
+        {{-- Progress Bar --}}
+        <div class="w-64 h-2 bg-gray-200 rounded-full overflow-hidden">
+            <div class="h-full bg-uitm-violet transition-all duration-300" :style="`width: ${((currentIndex + 1) / cards.length) * 100}%`"></div>
+        </div>
+
+        {{-- Next Button --}}
+        <button @click="nextCard()" :disabled="currentIndex === cards.length - 1"
+                class="w-14 h-14 rounded-full bg-uitm-violet shadow-lg shadow-purple-200 flex items-center justify-center text-white hover:bg-purple-800 hover:scale-105 transition disabled:opacity-50 disabled:bg-gray-300 disabled:shadow-none disabled:cursor-not-allowed">
+            <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"></path></svg>
+        </button>
+    </div>
+</div>
+
+<script>
+    function studySession(cardsData) {
+        return {
+            cards: cardsData,
+            currentIndex: 0,
+            flipped: false,
+            
+            get currentCard() {
+                return this.cards[this.currentIndex];
+            },
+
+            flipCard() {
+                this.flipped = !this.flipped;
+            },
+
+            nextCard() {
+                if (this.currentIndex < this.cards.length - 1) {
+                    this.flipped = false; // Reset flip bila tukar kad
+                    setTimeout(() => {
+                        this.currentIndex++;
+                    }, 200); // Tunggu kejap bagi animation flip balik smooth
+                }
+            },
+
+            prevCard() {
+                if (this.currentIndex > 0) {
+                    this.flipped = false;
+                    setTimeout(() => {
+                        this.currentIndex--;
+                    }, 200);
+                }
+            }
+        }
+    }
+</script>
+@endsection
+</file>
+
+<file path="resources/views/profile/edit.blade.php">
+@extends('layouts.app')
+
+@section('content')
+<div class="max-w-4xl mx-auto">
+    <div class="mb-8">
+        <h2 class="text-3xl font-extrabold text-uitm-blue">My Profile</h2>
+        <p class="text-gray-500">Manage your account information and preferences.</p>
+    </div>
+
+    @if(session('success'))
+        <div class="mb-6 p-4 bg-green-100 border-l-4 border-green-500 text-green-700 rounded shadow-sm flex items-center gap-2">
+            <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path></svg>
+            <span class="font-bold">{{ session('success') }}</span>
+        </div>
+    @endif
+
+    <div class="grid grid-cols-1 md:grid-cols-3 gap-8">
+        
+        {{-- Card Kiri: Gambar & Info Ringkas --}}
+        <div class="md:col-span-1">
+            <div class="bg-white rounded-3xl p-8 shadow-sm border border-gray-100 text-center h-full">
+                <div class="w-24 h-24 bg-uitm-violet text-white text-3xl font-black rounded-full flex items-center justify-center mx-auto mb-4 shadow-lg shadow-purple-200">
+                    {{ strtoupper(substr($user->name, 0, 1)) }}
+                </div>
+                <h3 class="font-bold text-gray-800 text-lg">{{ $user->name }}</h3>
+                <p class="text-xs font-bold text-uitm-blue bg-blue-50 py-1 px-3 rounded-full inline-block mt-2 uppercase tracking-wider">
+                    {{ $user->role }}
+                </p>
+                
+                <div class="mt-8 text-left space-y-3">
+                    <div>
+                        <span class="block text-[10px] text-gray-400 uppercase font-bold">Joined Date</span>
+                        <span class="text-sm font-medium text-gray-600">{{ $user->created_at->format('d M Y') }}</span>
+                    </div>
+                    <div>
+                        <span class="block text-[10px] text-gray-400 uppercase font-bold">Email Status</span>
+                        @if($user->email_verified_at)
+                            <span class="text-xs font-bold text-green-600 flex items-center gap-1">
+                                <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>
+                                Verified
+                            </span>
+                        @else
+                            <span class="text-xs font-bold text-red-500">Unverified</span>
+                        @endif
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        {{-- Card Kanan: Edit Form --}}
+        <div class="md:col-span-2">
+            <div class="bg-white rounded-3xl p-8 shadow-sm border border-gray-100">
+                <h3 class="font-bold text-gray-800 mb-6 text-xl">Edit Information</h3>
+
+                <form action="{{ route('profile.update') }}" method="POST">
+                    @csrf
+                    @method('PATCH')
+
+                    <div class="space-y-5">
+                        {{-- Name --}}
+                        <div>
+                            <label for="name" class="block text-sm font-bold text-gray-700 mb-2">Full Name</label>
+                            <input id="name" type="text" name="name" value="{{ old('name', $user->name) }}" required
+                                class="w-full border-gray-200 rounded-xl p-3 focus:ring-uitm-violet focus:border-uitm-violet transition">
+                            @error('name') <span class="text-red-500 text-xs font-bold mt-1">{{ $message }}</span> @enderror
+                        </div>
+
+                        {{-- Email --}}
+                        <div>
+                            <label for="email" class="block text-sm font-bold text-gray-700 mb-2">Email Address</label>
+                            <input id="email" type="email" name="email" value="{{ old('email', $user->email) }}" required
+                                class="w-full border-gray-200 rounded-xl p-3 bg-gray-50 text-gray-500 cursor-not-allowed"
+                                readonly
+                                title="Please contact admin to change email">
+                            <p class="text-[10px] text-gray-400 mt-1">*Student Email cannot be changed directly.</p>
+                        </div>
+
+                        <div class="grid grid-cols-2 gap-4">
+                            {{-- Faculty --}}
+                            <div>
+                                <label for="faculty" class="block text-sm font-bold text-gray-700 mb-2">Faculty</label>
+                                <input id="faculty" type="text" name="faculty" value="{{ old('faculty', $user->faculty) }}" required placeholder="e.g. FSKM"
+                                    class="w-full border-gray-200 rounded-xl p-3 focus:ring-uitm-violet focus:border-uitm-violet transition">
+                                @error('faculty') <span class="text-red-500 text-xs font-bold mt-1">{{ $message }}</span> @enderror
+                            </div>
+
+                            {{-- Course Code --}}
+                            <div>
+                                <label for="course_code" class="block text-sm font-bold text-gray-700 mb-2">Course Code</label>
+                                <input id="course_code" type="text" name="course_code" value="{{ old('course_code', $user->course_code) }}" required placeholder="e.g. CS240"
+                                    class="w-full border-gray-200 rounded-xl p-3 focus:ring-uitm-violet focus:border-uitm-violet transition">
+                                @error('course_code') <span class="text-red-500 text-xs font-bold mt-1">{{ $message }}</span> @enderror
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="mt-8 flex justify-end">
+                        <button type="submit" class="bg-uitm-blue text-white px-6 py-3 rounded-xl font-bold hover:bg-blue-900 transition shadow-lg hover:-translate-y-1">
+                            Save Changes
+                        </button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+</div>
+@endsection
+</file>
+
+<file path="resources/views/settings/edit.blade.php">
+@extends('layouts.app')
+
+@section('content')
+<div class="max-w-4xl mx-auto">
+    <div class="mb-8">
+        <h2 class="text-3xl font-extrabold text-uitm-blue">Account Settings</h2>
+        <p class="text-gray-500">Manage security and account preferences.</p>
+    </div>
+
+    @if(session('success'))
+        <div class="mb-6 p-4 bg-green-100 border-l-4 border-green-500 text-green-700 rounded shadow-sm font-bold">
+            {{ session('success') }}
+        </div>
+    @endif
+    
+    @if($errors->any())
+        <div class="mb-6 p-4 bg-red-50 border-l-4 border-red-500 text-red-700 rounded shadow-sm text-sm">
+            <ul class="list-disc pl-5">
+                @foreach ($errors->all() as $error)
+                    <li>{{ $error }}</li>
+                @endforeach
+            </ul>
+        </div>
+    @endif
+
+    <div class="space-y-8">
+        
+        {{-- CARD 1: CHANGE PASSWORD --}}
+        <div class="bg-white rounded-3xl p-8 shadow-sm border border-gray-100">
+            <div class="flex items-center gap-4 mb-6 border-b border-gray-100 pb-4">
+                <div class="w-10 h-10 rounded-full bg-blue-50 flex items-center justify-center text-uitm-blue">
+                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z"></path></svg>
+                </div>
+                <div>
+                    <h3 class="font-bold text-gray-800 text-lg">Change Password</h3>
+                    <p class="text-xs text-gray-400">Ensure your account is using a long, random password to stay secure.</p>
+                </div>
+            </div>
+
+            <form action="{{ route('settings.password.update') }}" method="POST" class="max-w-xl">
+                @csrf
+                @method('PUT')
+
+                <div class="space-y-4">
+                    <div>
+                        <label for="current_password" class="block text-sm font-bold text-gray-700 mb-2">Current Password</label>
+                        <input id="current_password" type="password" name="current_password" required
+                            class="w-full border-gray-200 rounded-xl p-3 focus:ring-uitm-violet focus:border-uitm-violet transition">
+                    </div>
+
+                    <div>
+                        <label for="password" class="block text-sm font-bold text-gray-700 mb-2">New Password</label>
+                        <input id="password" type="password" name="password" required
+                            class="w-full border-gray-200 rounded-xl p-3 focus:ring-uitm-violet focus:border-uitm-violet transition">
+                    </div>
+
+                    <div>
+                        <label for="password_confirmation" class="block text-sm font-bold text-gray-700 mb-2">Confirm New Password</label>
+                        <input id="password_confirmation" type="password" name="password_confirmation" required
+                            class="w-full border-gray-200 rounded-xl p-3 focus:ring-uitm-violet focus:border-uitm-violet transition">
+                    </div>
+
+                    <div class="pt-2">
+                        <button type="submit" class="bg-gray-800 text-white px-6 py-2.5 rounded-xl font-bold hover:bg-black transition text-sm shadow-lg">
+                            Update Password
+                        </button>
+                    </div>
+                </div>
+            </form>
+        </div>
+
+        {{-- CARD 2: DANGER ZONE (DELETE ACCOUNT) --}}
+        <div class="bg-red-50 rounded-3xl p-8 shadow-sm border border-red-100">
+            <div class="flex items-center gap-4 mb-6">
+                <div class="w-10 h-10 rounded-full bg-red-100 flex items-center justify-center text-red-600">
+                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"></path></svg>
+                </div>
+                <div>
+                    <h3 class="font-bold text-red-700 text-lg">Delete Account</h3>
+                    <p class="text-xs text-red-400">Once you delete your account, there is no going back. Please be certain.</p>
+                </div>
+            </div>
+
+            <div x-data="{ open: false }">
+                <button @click="open = true" class="bg-red-600 text-white px-6 py-2.5 rounded-xl font-bold hover:bg-red-700 transition text-sm shadow-lg shadow-red-200">
+                    Delete Account
+                </button>
+
+                {{-- Modal Confirmation --}}
+                <div x-show="open" class="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm" style="display: none;">
+                    <div class="bg-white rounded-2xl p-8 max-w-md w-full shadow-2xl mx-4" @click.away="open = false">
+                        <h2 class="text-xl font-bold text-gray-900 mb-4">Are you absolutely sure?</h2>
+                        <p class="text-gray-500 text-sm mb-6">
+                            This action cannot be undone. This will permanently delete your account and remove your data from UiTM StudyHub.
+                        </p>
+
+                        <form action="{{ route('settings.destroy') }}" method="POST">
+                            @csrf
+                            @method('DELETE')
+
+                            <div class="mb-6">
+                                <label for="confirm_password" class="block text-sm font-bold text-gray-700 mb-2">Enter your password to confirm</label>
+                                <input id="confirm_password" type="password" name="password" required placeholder="Password"
+                                    class="w-full border-gray-200 rounded-xl p-3 focus:ring-red-500 focus:border-red-500">
+                            </div>
+
+                            <div class="flex justify-end gap-3">
+                                <button type="button" @click="open = false" class="px-4 py-2 text-gray-500 font-bold hover:bg-gray-100 rounded-lg transition">
+                                    Cancel
+                                </button>
+                                <button type="submit" class="px-4 py-2 bg-red-600 text-white font-bold rounded-lg hover:bg-red-700 transition shadow-lg">
+                                    Yes, Delete My Account
+                                </button>
+                            </div>
+                        </form>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+    </div>
+</div>
+@endsection
 </file>
 
 <file path=".editorconfig">
@@ -722,208 +1085,89 @@ namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
 use Illuminate\Http\Request;
+use App\Models\FlashcardDeck;
+use App\Models\Flashcard;
+use Illuminate\Support\Facades\Auth;
 
 class FlashcardDeckController extends Controller
 {
     /**
-     * Display a listing of the resource.
-     */
-    public function index()
-    {
-        //
-    }
-
-    /**
-     * Store a newly created resource in storage.
-     */
-    public function store(Request $request)
-    {
-        //
-    }
-
-    /**
-     * Display the specified resource.
-     */
-    public function show(string $id)
-    {
-        //
-    }
-
-    /**
-     * Update the specified resource in storage.
-     */
-    public function update(Request $request, string $id)
-    {
-        //
-    }
-
-    /**
-     * Remove the specified resource from storage.
-     */
-    public function destroy(string $id)
-    {
-        //
-    }
-}
-</file>
-
-<file path="app/Http/Controllers/Api/ResourceController.php">
-<?php
-
-namespace App\Http\Controllers\Api;
-
-use App\Http\Controllers\Controller;
-use Illuminate\Http\Request;
-use App\Models\Resource;
-use Illuminate\Support\Facades\Auth;
-use Illuminate\Support\Facades\Storage;
-use Illuminate\Validation\ValidationException;
-
-class ResourceController extends Controller
-{
-    /**
-     * Display a listing of the resource.
+     * Display a listing of the resource (Flashcard Library).
      */
     public function index(Request $request)
     {
-        $query = Resource::where('status', 'approved');
+        // Start query asas
+        $query = FlashcardDeck::with('user')
+                    ->withCount('flashcards')
+                    ->latest();
 
-        // IF the user searched for something, filter the results
+        // [BARU] Logic Search
         if ($request->has('search')) {
-            $query->where('course_code', 'LIKE', '%' . $request->search . '%')
-                ->orWhere('title', 'LIKE', '%' . $request->search . '%');
+            $keyword = $request->search;
+            
+            // Cari dalam tajuk deck ATAU subject code
+            $query->where(function($q) use ($keyword) {
+                $q->where('deck_name', 'LIKE', '%' . $keyword . '%')
+                  ->orWhere('subject_code', 'LIKE', '%' . $keyword . '%');
+            });
         }
 
-        $resources = $query->with('user')->get();
-        
-        return view('library', compact('resources'));
+        $decks = $query->get();
+
+        return view('flashcards.index', compact('decks'));
     }
 
     /**
-     * Show the form for creating a new resource.
+     * Show the form for creating a new deck.
      */
     public function create()
     {
-        return view('resources.create');
+        return view('flashcards.create');
     }
 
     /**
-     * Display the authenticated user's uploaded resources.
-     */
-    public function myUploads()
-    {
-        // Fetches ONLY the files belonging to the logged-in student
-        $resources = auth()->user()->resources()->latest()->get();
-        return view('resources.my-uploads', compact('resources'));
-    }
-
-    public function destroy(Resource $resource)
-    {
-        // Security check: Only allow the owner to delete their own file
-        if ($resource->user_id !== auth()->id()) {
-            abort(403);
-        }
-
-        $resource->delete();
-        return back()->with('success', 'Resource deleted successfully.');
-    }
-
-    /**
-     * Store a newly created resource in storage.
+     * Store a newly created deck and its cards.
      */
     public function store(Request $request)
     {
+        // 1. Validate Input
         $request->validate([
-            'title' => 'required|string|max:255',
-            'faculty' => 'required|string',
-            'course_code' => 'required|string',
-            'resource_file' => 'required|file|mimes:pdf,docx|max:10240', // 10MB limit
+            'deck_name' => 'required|string|max:255',
+            'subject_code' => 'required|string|max:50',
+            'cards' => 'required|array|min:1', // Mesti ada sekurang-kurangnya 1 kad
+            'cards.*.front' => 'required|string', // Check setiap kad mesti ada soalan
+            'cards.*.back' => 'required|string',  // Check setiap kad mesti ada jawapan
         ]);
 
-        if ($request->hasFile('resource_file')) {
-            $file = $request->file('resource_file');
-            $fileName = time() . '_' . $file->getClientOriginalName();
-            $filePath = $file->storeAs('uploads/resources', $fileName, 'public');
+        // 2. Create Deck (Header)
+        $deck = FlashcardDeck::create([
+            'deck_name' => $request->deck_name,
+            'subject_code' => $request->subject_code,
+            'user_id' => Auth::id(),
+        ]);
 
-            Resource::create([
-                'title' => $request->title,
-                'description' => $request->description,
-                'faculty' => $request->faculty,
-                'course_code' => $request->course_code,
-                'file_url' => $filePath,
-                'user_id' => Auth::id() ?? 1, // Fallback to ID 1 if not logged in for demo
-                'status' => 'pending', // Needs admin approval
+        // 3. Create Cards (Items) - Loop array dari form
+        foreach ($request->cards as $cardData) {
+            Flashcard::create([
+                'deck_id' => $deck->deck_id, // Link kan dengan deck baru tadi
+                'front_text' => $cardData['front'],
+                'back_text' => $cardData['back'],
             ]);
-
-            return redirect()->route('resources.index')->with('success', 'Resource uploaded! Waiting for admin approval.');
         }
 
-        return back()->with('error', 'File upload failed.');
+        // 4. Redirect
+        return redirect()->route('flashcards.index')->with('success', 'Flashcard Deck created successfully!');
     }
 
     /**
-     * Display the specified resource.
+     * Display the specified deck for studying.
      */
-    public function show(string $id)
+    public function show($id)
     {
-        //
-    }
-
-    /**
-     * Update the specified resource in storage.
-     */
-    public function update(Request $request, string $id)
-    {
-        //
-    }
-
-    /**
-     * Remove the specified resource from storage.
-     */
-    public function destroy(string $id)
-    {
-        //
-    }
-}
-</file>
-
-<file path="app/Http/Controllers/Auth/AuthenticatedSessionController.php">
-<?php
-
-namespace App\Http\Controllers\Auth;
-
-use App\Http\Controllers\Controller;
-use App\Http\Requests\Auth\LoginRequest;
-use Illuminate\Http\Request;
-use Illuminate\Http\Response;
-use Illuminate\Support\Facades\Auth;
-
-class AuthenticatedSessionController extends Controller
-{
-    /**
-     * Handle an incoming authentication request.
-     */
-    public function store(LoginRequest $request): Response
-    {
-        $request->authenticate();
-
-        $request->session()->regenerate();
-
-        return response()->noContent();
-    }
-
-    /**
-     * Destroy an authenticated session.
-     */
-    public function destroy(Request $request): Response
-    {
-        Auth::guard('web')->logout();
-
-        $request->session()->invalidate();
-
-        $request->session()->regenerateToken();
-
-        return response()->noContent();
+        // Tarik deck sekali dengan semua flashcards dia
+        $deck = FlashcardDeck::with('flashcards')->findOrFail($id);
+        
+        return view('flashcards.study', compact('deck'));
     }
 }
 </file>
@@ -1050,62 +1294,6 @@ class PasswordResetLinkController extends Controller
         }
 
         return response()->json(['status' => __($status)]);
-    }
-}
-</file>
-
-<file path="app/Http/Controllers/Auth/RegisteredUserController.php">
-<?php
-
-namespace App\Http\Controllers\Auth;
-
-use App\Http\Controllers\Controller;
-use App\Models\User;
-use Illuminate\Auth\Events\Registered;
-use Illuminate\Http\Request;
-use Illuminate\Http\Response;
-use Illuminate\Support\Facades\Auth;
-use Illuminate\Support\Facades\Hash;
-use Illuminate\Validation\Rules;
-
-class RegisteredUserController extends Controller
-{
-    /**
-     * Handle an incoming registration request.
-     *
-     * @throws \Illuminate\Validation\ValidationException
-     */
-    public function store(Request $request): Response
-    {
-        $request->validate([
-        'name' => ['required', 'string', 'max:255'],
-        'email' => [
-            'required', 
-            'string', 
-            'lowercase', 
-            'email', 
-            'max:255', 
-            'unique:'.User::class,
-            // THIS LINE ENFORCES THE DOMAIN
-            'regex:/^[a-zA-Z0-9._%+-]+@student\.uitm\.edu\.my$/i' 
-        ],
-        'password' => ['required', 'confirmed', Rules\Password::defaults()],
-        ], [
-            // THIS IS YOUR CUSTOM MESSAGE
-            'email.regex' => 'Please use your @student.uitm.edu.my email address.',
-        ]);
-
-        $user = User::create([
-            'name' => $request->name,
-            'email' => $request->email,
-            'password' => Hash::make($request->string('password')),
-        ]);
-
-        event(new Registered($user));
-
-        Auth::login($user);
-
-        return response()->noContent();
     }
 }
 </file>
@@ -1392,11 +1580,11 @@ use Illuminate\Database\Eloquent\Relations\HasMany;
 
 class Resource extends Model
 {
+    // Ensure this matches your database column exactly (resources_id vs resource_id)
     protected $primaryKey = 'resources_id';
 
     /**
      * The attributes that are mass assignable.
-     * These fields can be safely updated via a Controller.
      */
     protected $fillable = [
         'title',
@@ -1414,31 +1602,26 @@ class Resource extends Model
 
     /**
      * Get the user who uploaded the resource.
-     * A Resource belongs to one User.
      */
     public function user(): BelongsTo
     {
-        // Links the FK 'user_id' in the resources table to the PK 'user_id' in the users table
+        // Linking user_id (FK) to user_id (PK in users table)
         return $this->belongsTo(User::class, 'user_id', 'user_id');
     }
 
     /**
      * Get the ratings for the resource.
-     * A Resource can have many Ratings.
      */
     public function ratings(): HasMany
     {
-        // Links the FK 'resource_id' in resource_ratings to the PK 'resources_id' in this table
         return $this->hasMany(ResourceRating::class, 'resource_id', 'resources_id');
     }
 
     /**
      * Get the comments for the resource.
-     * A Resource can have many Comments.
      */
     public function comments(): HasMany
     {
-        // Links the FK 'resource_id' in resource_comments to the PK 'resources_id' in this table
         return $this->hasMany(ResourceComment::class, 'resource_id', 'resources_id');
     }
 }
@@ -3383,31 +3566,6 @@ class DatabaseSeeder extends Seeder
 }
 </file>
 
-<file path="package.json">
-{
-    "$schema": "https://www.schemastore.org/package.json",
-    "private": true,
-    "type": "module",
-    "scripts": {
-        "build": "vite build",
-        "dev": "vite"
-    },
-    "devDependencies": {
-        "@tailwindcss/vite": "^4.0.0",
-        "autoprefixer": "^10.4.23",
-        "axios": "^1.11.0",
-        "concurrently": "^9.0.1",
-        "laravel-vite-plugin": "^2.0.0",
-        "postcss": "^8.5.6",
-        "tailwindcss": "^4.1.18",
-        "vite": "^7.0.7"
-    },
-    "dependencies": {
-        "@tailwindcss/postcss": "^4.1.18"
-    }
-}
-</file>
-
 <file path="phpunit.xml">
 <?xml version="1.0" encoding="UTF-8"?>
 <phpunit xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
@@ -3444,6 +3602,15 @@ class DatabaseSeeder extends Seeder
         <env name="NIGHTWATCH_ENABLED" value="false"/>
     </php>
 </phpunit>
+</file>
+
+<file path="postcss.config.js">
+export default {
+    plugins: {
+        '@tailwindcss/postcss': {}, // Change this line
+        autoprefixer: {},
+    },
+};
 </file>
 
 <file path="README.md">
@@ -3508,29 +3675,6 @@ If you discover a security vulnerability within Laravel, please send an e-mail t
 The Laravel framework is open-sourced software licensed under the [MIT license](https://opensource.org/licenses/MIT).
 </file>
 
-<file path="resources/css/app.css">
-@import "tailwindcss";
-
-@theme {
-  --color-uitm-blue: #012E6F;
-  --color-uitm-violet: #753895;
-  --color-uitm-gold: #FFD700;
-}
-
-/* custom classes for the Flashcard effect */
-@utility perspective-1000 {
-  perspective: 1000px;
-}
-
-@utility preserve-3d {
-  transform-style: preserve-3d;
-}
-
-@utility backface-hidden {
-  backface-visibility: hidden;
-}
-</file>
-
 <file path="resources/js/app.js">
 import './bootstrap';
 </file>
@@ -3544,6 +3688,686 @@ window.axios.defaults.headers.common['X-Requested-With'] = 'XMLHttpRequest';
 
 <file path="resources/views/.gitkeep">
 
+</file>
+
+<file path="resources/views/admin/dashboard.blade.php">
+@extends('layouts.app')
+
+@section('content')
+<div class="mb-8">
+    <h2 class="text-3xl font-bold text-uitm-blue">Admin Dashboard</h2>
+    <p class="text-gray-500">Overview of platform activity and pending approvals.</p>
+</div>
+
+@if(session('success'))
+    <div class="mb-6 p-4 bg-green-100 border-l-4 border-green-500 text-green-700 text-sm font-bold rounded shadow-sm">
+        {{ session('success') }}
+    </div>
+@endif
+
+{{-- Stats Cards --}}
+<div class="grid grid-cols-1 md:grid-cols-4 gap-6 mb-10">
+    <div class="bg-white p-6 rounded-2xl border border-gray-100 shadow-sm">
+        <p class="text-xs font-bold text-gray-400 uppercase tracking-wider">Total Users</p>
+        <p class="text-3xl font-black text-uitm-blue mt-2">{{ $stats['total_users'] ?? '0' }}</p>
+    </div>
+    <div class="bg-white p-6 rounded-2xl border border-gray-100 shadow-sm">
+        <p class="text-xs font-bold text-gray-400 uppercase tracking-wider">Pending Files</p>
+        <p class="text-3xl font-black text-orange-500 mt-2">{{ $stats['pending'] }}</p>
+    </div>
+    <div class="bg-white p-6 rounded-2xl border border-gray-100 shadow-sm">
+        <p class="text-xs font-bold text-gray-400 uppercase tracking-wider">Approved</p>
+        <p class="text-3xl font-black text-green-500 mt-2">{{ $stats['approved'] }}</p>
+    </div>
+    <div class="bg-white p-6 rounded-2xl border border-gray-100 shadow-sm">
+        <p class="text-xs font-bold text-gray-400 uppercase tracking-wider">Total Files</p>
+        <p class="text-3xl font-black text-gray-800 mt-2">{{ $stats['total_files'] }}</p>
+    </div>
+</div>
+
+{{-- Pending Table --}}
+<div class="bg-white rounded-3xl border border-gray-100 shadow-sm overflow-hidden">
+    <div class="p-6 border-b border-gray-50 bg-gray-50/50 flex justify-between items-center">
+        <h3 class="font-bold text-gray-800">Pending Resource Approvals</h3>
+        <span class="bg-orange-100 text-orange-600 text-[10px] font-bold px-3 py-1 rounded-full uppercase">
+            {{ $pendingResources->count() }} Waiting
+        </span>
+    </div>
+    
+    <table class="w-full text-left">
+        <thead class="bg-gray-50 text-gray-400 text-[10px] uppercase font-bold">
+            <tr>
+                <th class="px-6 py-4">Resource Title</th>
+                <th class="px-6 py-4">Uploader</th>
+                <th class="px-6 py-4 text-center">Action</th>
+            </tr>
+        </thead>
+        <tbody class="divide-y divide-gray-100">
+            @forelse($pendingResources as $res)
+                <tr>
+                    {{-- Column 1: Title & Course Code --}}
+                    <td class="px-6 py-4">
+                        <div class="font-semibold text-gray-700">{{ $res->title }}</div>
+                        <div class="text-[10px] text-gray-400 uppercase">{{ $res->course_code }}</div>
+                    </td>
+
+                    {{-- Column 2: Uploader --}}
+                    <td class="px-6 py-4 text-sm text-gray-500">
+                        <div>{{ $res->user->name ?? 'Unknown' }}</div>
+                        <div class="text-xs text-gray-400">{{ $res->user->email ?? '' }}</div>
+                    </td>
+
+                    {{-- Column 3: Actions (View, Approve, Reject) --}}
+                    <td class="px-6 py-4">
+                        <div class="flex justify-center gap-2">
+                            
+                            {{-- View Button --}}
+                            <a href="{{ route('resources.view', $res->resources_id) }}" target="_blank"
+                               class="bg-gray-100 hover:bg-gray-200 text-gray-600 px-3 py-1.5 rounded-lg text-xs font-bold transition flex items-center gap-1"
+                               title="Preview File">
+                                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"></path><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"></path></svg>
+                                View
+                            </a>
+
+                            {{-- Approve Form --}}
+                            <form action="{{ route('admin.resources.status', $res->resources_id) }}" method="POST">
+                                @csrf
+                                @method('PATCH')
+                                <input type="hidden" name="status" value="approved">
+                                <button type="submit" class="bg-green-500 hover:bg-green-600 text-white px-3 py-1.5 rounded-lg text-xs font-bold transition flex items-center gap-1">
+                                    <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path></svg>
+                                    Approve
+                                </button>
+                            </form>
+
+                            {{-- Reject Form --}}
+                            <form action="{{ route('admin.resources.status', $res->resources_id) }}" method="POST">
+                                @csrf
+                                @method('PATCH')
+                                <input type="hidden" name="status" value="rejected">
+                                <button type="submit" class="bg-red-500 hover:bg-red-600 text-white px-3 py-1.5 rounded-lg text-xs font-bold transition flex items-center gap-1">
+                                    <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path></svg>
+                                    Reject
+                                </button>
+                            </form>
+                        </div>
+                    </td>
+                </tr>
+            @empty
+                <tr>
+                    <td colspan="3" class="px-6 py-20 text-center text-gray-400 italic">
+                        No pending resources to review. Good job!
+                    </td>
+                </tr>
+            @endforelse
+        </tbody>
+    </table>
+</div>
+@endsection
+</file>
+
+<file path="resources/views/auth/register.blade.php">
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Register - UiTM StudyHub</title>
+    @vite(['resources/css/app.css', 'resources/js/app.js'])
+</head>
+<body class="bg-gray-100 min-h-screen flex items-center justify-center py-12 px-4">
+
+    <div class="max-w-md w-full bg-white rounded-xl shadow-lg p-8">
+        <div class="text-center mb-8">
+            <h1 class="text-3xl font-extrabold text-[#003366]">UiTM <span class="text-[#FFCC00]">StudyHub</span></h1>
+            <p class="text-gray-500 mt-2">Create your student account</p>
+        </div>
+
+        @if ($errors->any())
+            <div class="mb-4 p-4 bg-red-50 text-red-600 rounded-lg text-sm">
+                <ul>
+                    @foreach ($errors->all() as $error)
+                        <li>{{ $error }}</li>
+                    @endforeach
+                </ul>
+            </div>
+        @endif
+
+        <form method="POST" action="{{ route('register') }}">
+            @csrf
+
+            <div class="mb-4">
+                <label for="name" class="block text-sm font-medium text-gray-700 mb-1">Full Name</label>
+                <input id="name" type="text" name="name" value="{{ old('name') }}" required autofocus
+                    class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none transition">
+            </div>
+
+            <div class="mb-4">
+                <label for="email" class="block text-sm font-medium text-gray-700 mb-1">Student Email</label>
+                <input id="email" type="email" name="email" value="{{ old('email') }}" required
+                    class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none transition">
+            </div>
+
+            <div class="mb-4">
+                <label for="password" class="block text-sm font-medium text-gray-700 mb-1">Password</label>
+                <input id="password" type="password" name="password" required autocomplete="new-password"
+                    class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none transition">
+            </div>
+
+            <div class="mb-6">
+                <label for="password_confirmation" class="block text-sm font-medium text-gray-700 mb-1">Confirm Password</label>
+                <input id="password_confirmation" type="password" name="password_confirmation" required
+                    class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none transition">
+            </div>
+
+            <button type="submit"
+                class="w-full bg-[#003366] text-white font-bold py-2 rounded-lg hover:bg-blue-900 transition duration-200">
+                Register Account
+            </button>
+        </form>
+
+        <div class="mt-6 text-center text-sm text-gray-600">
+            Already have an account?
+            <a href="{{ route('login') }}" class="text-blue-600 font-semibold hover:underline">Log in here</a>
+        </div>
+    </div>
+
+</body>
+</html>
+</file>
+
+<file path="resources/views/flashcards/create.blade.php">
+@extends('layouts.app')
+
+@section('content')
+<div class="max-w-5xl mx-auto" x-data="flashcardForm()">
+    <div class="flex justify-between items-center mb-8">
+        <div>
+            <h2 class="text-3xl font-extrabold text-uitm-blue">Create Flashcard Deck</h2>
+            <p class="text-gray-500">Create a study deck and add your questions.</p>
+        </div>
+        
+        {{-- Submit Button --}}
+        <button type="submit" form="deckForm" class="bg-uitm-violet text-white px-8 py-3 rounded-xl font-bold shadow-lg shadow-purple-200 hover:-translate-y-1 transition-all flex items-center gap-2">
+            <span>Save Deck</span>
+            <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path></svg>
+        </button>
+    </div>
+
+    <form id="deckForm" action="{{ route('flashcards.store') }}" method="POST">
+        @csrf
+
+        {{-- Section 1: Deck Info --}}
+        <div class="bg-white p-8 rounded-3xl shadow-sm border border-gray-100 mb-8">
+            <h3 class="font-bold text-gray-800 mb-6 text-lg">Deck Information</h3>
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+                <div>
+                    <label for="deck_name" class="block text-sm font-bold text-gray-700 mb-2">Deck Name</label>
+                    <input id="deck_name" name="deck_name" required placeholder="e.g. Chapter 4: Database Design"
+                        class="w-full border-gray-200 rounded-xl p-4 focus:ring-uitm-violet focus:border-uitm-violet transition">
+                </div>
+                <div>
+                    <label for="subject_code" class="block text-sm font-bold text-gray-700 mb-2">Subject Code</label>
+                    <input id="subject_code" type="text" name="subject_code" required placeholder="e.g. ICT500"
+                        class="w-full border-gray-200 rounded-xl p-4 focus:ring-uitm-violet focus:border-uitm-violet transition">
+                </div>
+            </div>
+        </div>
+
+        {{-- Section 2: Cards List (Dynamic) --}}
+        <div class="space-y-6">
+            {{-- Loop Card Inputs --}}
+            <template x-for="(card, index) in cards" :key="index">
+                <div class="bg-white p-6 rounded-3xl shadow-sm border border-gray-100 relative group hover:border-uitm-blue transition-colors">
+                    
+                    <div class="flex justify-between items-start mb-4">
+                        <span class="bg-blue-50 text-uitm-blue text-xs font-bold px-3 py-1 rounded-full">
+                            Card #<span x-text="index + 1"></span>
+                        </span>
+                        
+                        {{-- Delete Button (Show only if more than 1 card) --}}
+                        <button type="button" @click="removeCard(index)" x-show="cards.length > 1"
+                            class="text-gray-300 hover:text-red-500 transition">
+                            <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"></path></svg>
+                        </button>
+                    </div>
+
+                    <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+                        {{-- Front Input --}}
+                        <div>
+                            <label for="front" class="block text-xs font-bold text-gray-400 mb-2 uppercase">Front (Question)</label>
+                            <textarea id="front" :name="`cards[${index}][front]`" required rows="2" placeholder="Enter question..."
+                                class="w-full bg-gray-50 border-transparent rounded-xl p-4 focus:bg-white focus:ring-uitm-violet focus:border-uitm-violet transition resize-none"></textarea>
+                        </div>
+                        
+                        {{-- Back Input --}}
+                        <div>
+                            <label for="back" class="block text-xs font-bold text-gray-400 mb-2 uppercase">Back (Answer)</label>
+                            <textarea id="back" :name="`cards[${index}][back]`" required rows="2" placeholder="Enter answer..."
+                                class="w-full bg-gray-50 border-transparent rounded-xl p-4 focus:bg-white focus:ring-uitm-violet focus:border-uitm-violet transition resize-none"></textarea>
+                        </div>
+                    </div>
+                </div>
+            </template>
+        </div>
+
+        {{-- Add New Card Button --}}
+        <div class="mt-8 text-center">
+            <button type="button" @click="addCard()"
+                class="bg-white border-2 border-dashed border-gray-300 text-gray-500 px-8 py-4 rounded-2xl font-bold hover:border-uitm-violet hover:text-uitm-violet transition-all w-full flex justify-center items-center gap-2 group">
+                <div class="bg-gray-100 group-hover:bg-purple-100 rounded-full p-1 transition-colors">
+                    <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"></path></svg>
+                </div>
+                Add Another Card
+            </button>
+        </div>
+
+    </form>
+</div>
+
+{{-- Alpine JS Logic --}}
+<script>
+    function flashcardForm() {
+        return {
+            cards: [
+                { front: '', back: '' } // Start with 1 empty card
+            ],
+            addCard() {
+                this.cards.push({ front: '', back: '' });
+            },
+            removeCard(index) {
+                this.cards.splice(index, 1);
+            }
+        }
+    }
+</script>
+@endsection
+</file>
+
+<file path="resources/views/layouts/app.blade.php">
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>UiTM StudyHub</title>
+    <script defer src="https://unpkg.com/alpinejs@3.x.x/dist/cdn.min.js"></script>
+    @vite(['resources/css/app.css', 'resources/js/app.js'])
+</head>
+<body class="bg-gray-50 flex">
+
+    {{-- SIDEBAR --}}
+    <aside class="w-64 bg-uitm-blue text-white min-h-screen fixed flex flex-col shadow-xl z-20">
+        <div class="p-8">
+            <h1 class="font-extrabold text-2xl tracking-tighter">UiTM <span class="text-uitm-gold">StudyHub</span></h1>
+            <p class="text-[10px] uppercase tracking-widest text-blue-200 mt-1">Collaborative Platform</p>
+        </div>
+
+        <nav class="flex-1 px-4 space-y-2">
+            <a href="{{ route('resources.index') }}"
+            class="flex items-center gap-3 px-4 py-3 rounded-xl transition {{ request()->is('library') || request()->is('/') ? 'bg-white/10 border-l-4 border-uitm-gold font-bold text-white' : 'text-blue-100 hover:bg-white/5' }}">
+                Resource Library
+            </a>
+
+            <a href="{{ route('flashcards.index') }}"
+            class="flex items-center gap-3 px-4 py-3 rounded-xl transition {{ request()->is('flashcards*') ? 'bg-white/10 border-l-4 border-uitm-gold font-bold text-white' : 'text-blue-100 hover:bg-white/5' }}">
+                Flashcards
+            </a>
+
+            @auth
+            <a href="{{ route('resources.my-uploads') }}"
+            class="flex items-center gap-3 px-4 py-3 rounded-xl transition {{ request()->is('my-uploads*') ? 'bg-white/10 border-l-4 border-uitm-gold font-bold text-white' : 'text-blue-100 hover:bg-white/5' }}">
+                My Uploads
+            </a>
+            @endauth
+        </nav>
+
+        <div class="p-4 border-t border-blue-900/10">
+            <p class="text-[10px] text-center text-blue-300/50">© 2026 UiTM StudyHub</p>
+        </div>
+    </aside>
+
+    {{-- MAIN CONTENT --}}
+    <main class="flex-1 ml-64 min-h-screen relative">
+        <header class="bg-white border-b border-gray-100 p-6 flex justify-between items-center sticky top-0 z-10">
+            
+            {{-- SEARCH BAR --}}
+            <form action="{{ request()->is('flashcards*') ? route('flashcards.index') : route('resources.index') }}"
+                  method="GET"
+                  class="w-1/2 relative">
+                
+                <input type="text"
+                    name="search"
+                    value="{{ request('search') }}"
+                    placeholder="{{ request()->is('flashcards*') ? 'Search Flashcards...' : 'Search Resources...' }}"
+                    class="w-full bg-gray-50 border-gray-200 rounded-xl px-4 py-2 text-sm focus:ring-uitm-blue focus:border-uitm-blue transition-all">
+                    
+                <svg class="w-5 h-5 text-gray-400 absolute right-3 top-2.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"></path></svg>
+            </form>
+
+            {{-- USER PROFILE / LOGIN SECTION --}}
+            <div class="flex items-center gap-4">
+                
+                @auth
+                    {{-- JIKA SUDAH LOGIN: Tunjuk Profile & Logout --}}
+                    <div class="relative" x-data="{ open: false }">
+                        <button @click="open = !open" @click.away="open = false" class="flex items-center gap-4 focus:outline-none group">
+                            <div class="text-right hidden md:block">
+                                <span class="block text-sm font-bold text-gray-700 group-hover:text-uitm-blue transition">{{ Auth::user()->name }}</span>
+                                <span class="block text-xs text-gray-400 capitalize">{{ Auth::user()->role ?? 'Student' }}</span>
+                            </div>
+                            <div class="w-10 h-10 bg-uitm-violet rounded-full flex items-center justify-center text-white font-bold shadow-sm group-hover:scale-105 transition transform ring-2 ring-white">
+                                {{ strtoupper(substr(Auth::user()->name, 0, 1)) }}
+                            </div>
+                        </button>
+
+                        {{-- Dropdown Menu --}}
+                        <div x-show="open"
+                             x-transition:enter="transition ease-out duration-100"
+                             x-transition:enter-start="transform opacity-0 scale-95"
+                             x-transition:enter-end="transform opacity-100 scale-100"
+                             class="absolute right-0 mt-2 w-48 bg-white border border-gray-100 rounded-xl shadow-xl py-2 z-50"
+                             style="display: none;">
+                            
+                            <a href="{{ route('profile.edit') }}" class="block px-4 py-2 text-sm text-gray-700 hover:bg-gray-50 hover:text-uitm-blue font-medium">My Profile</a>
+                            <a href="{{ route('settings.edit') }}" class="block px-4 py-2 text-sm text-gray-700 hover:bg-gray-50 hover:text-uitm-blue border-b border-gray-50">Settings</a>
+
+                            @if(Auth::user()->role === 'admin')
+                                <a href="{{ route('admin.dashboard') }}" class="block px-4 py-2 text-sm text-uitm-blue font-bold hover:bg-blue-50">
+                                    🛡️ Admin Dashboard
+                                </a>
+                            @endif
+
+                            <form method="POST" action="{{ route('logout') }}">
+                                @csrf
+                                <button type="submit" class="w-full text-left px-4 py-2 text-sm text-red-500 hover:bg-red-50 font-bold flex items-center gap-2">
+                                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1"></path></svg>
+                                    Logout
+                                </button>
+                            </form>
+                        </div>
+                    </div>
+                @else
+                    {{-- JIKA BELUM LOGIN: Tunjuk Button Hijau --}}
+                    <a href="{{ route('login') }}" class="bg-green-500 text-white px-6 py-2.5 rounded-xl font-bold hover:bg-green-600 transition shadow-lg shadow-green-200 flex items-center gap-2">
+                        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 16l-4-4m0 0l4-4m-4 4h14m-5 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h7a3 3 0 013 3v1"></path></svg>
+                        Login
+                    </a>
+                @endauth
+
+            </div>
+        </header>
+
+        <div class="p-8">
+            @yield('content')
+        </div>
+    </main>
+</body>
+</html>
+</file>
+
+<file path="resources/views/library.blade.php">
+@extends('layouts.app')
+
+@section('content')
+<div class="flex justify-between items-end mb-8">
+    <div>
+        <h2 class="text-3xl font-extrabold text-uitm-blue">Resource Library</h2>
+        <p class="text-gray-500 font-medium">Explore and share academic resources.</p>
+    </div>
+    
+    {{-- Button Upload New (Same as My Uploads) --}}
+    <a href="{{ route('resources.create') }}" class="bg-uitm-violet text-white px-6 py-3 rounded-xl font-bold shadow-lg shadow-purple-200 hover:-translate-y-1 transition-all flex items-center gap-2">
+        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12"></path></svg>
+        Upload New
+    </a>
+</div>
+
+<div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+    @forelse($resources as $res)
+        <div class="bg-white border border-gray-100 rounded-3xl p-6 shadow-sm hover:shadow-xl transition-all group">
+            <div class="flex justify-between items-start mb-4">
+                <span class="bg-blue-50 text-uitm-blue text-[10px] font-black px-3 py-1 rounded-full uppercase tracking-widest">
+                    {{ $res->course_code }}
+                </span>
+                <span class="text-gray-400 text-xs font-bold uppercase">
+                    {{ $res->file_type ?? 'PDF' }}
+                </span>
+            </div>
+
+            <h3 class="text-xl font-bold text-gray-800 mb-2 group-hover:text-uitm-violet transition-colors">
+                {{ $res->title }}
+            </h3>
+            <p class="text-gray-500 text-sm mb-6">{{ $res->faculty }}</p>
+            
+            <div class="flex items-center justify-between mt-auto pt-4 border-t border-gray-50">
+                <div class="flex items-center gap-1">
+                    <span class="text-uitm-gold text-sm">★★★★★</span>
+                    <span class="text-xs font-bold text-gray-400">{{ $res->rating ?? '5.0' }}</span>
+                </div>
+                
+                <div class="flex gap-2">
+                    {{-- Button VIEW (Mata) --}}
+                    {{-- target="_blank" supaya buka tab baru --}}
+                    <a href="{{ route('resources.view', $res->resources_id) }}" target="_blank"
+                       class="w-8 h-8 rounded-lg bg-gray-100 flex items-center justify-center text-gray-500 hover:bg-gray-200 transition"
+                       title="View File">
+                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"></path><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"></path></svg>
+                    </a>
+
+                    {{-- Button DOWNLOAD (Arrow) --}}
+                    <a href="{{ route('resources.download', $res->resources_id) }}"
+                       class="bg-uitm-blue text-white px-4 py-2 rounded-lg text-xs font-bold hover:bg-blue-900 transition flex items-center gap-2">
+                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4-4m0 0l-4-4m4 4v12"></path></svg>
+                        Download
+                    </a>
+                </div>
+            </div>
+            
+            <p class="text-[10px] text-gray-400 mt-4">Uploaded by: {{ $res->user->name }}</p>
+        </div>
+    @empty
+        <div class="col-span-3 py-20 text-center">
+            <p class="text-gray-400 italic">No resources available yet. Be the first to upload!</p>
+        </div>
+    @endforelse
+</div>
+@endsection
+</file>
+
+<file path="resources/views/resources/create.blade.php">
+@extends('layouts.app')
+
+@section('content')
+<div class="max-w-4xl mx-auto">
+    <div class="mb-8">
+        <h2 class="text-3xl font-extrabold text-uitm-blue">Upload New Resource</h2>
+        <p class="text-gray-500 font-medium">Share your knowledge with other students.</p>
+    </div>
+
+    <div class="bg-white p-8 rounded-3xl shadow-sm border border-gray-100">
+        <form action="{{ route('resources.store') }}" method="POST" enctype="multipart/form-data">
+            @csrf
+
+            <div class="space-y-6">
+                
+                {{-- Title Input --}}
+                <div>
+                    <label for="title" class="block text-sm font-bold text-gray-700 mb-2">Resource Title</label>
+                    <input id="title" type="text"
+                           name="title"
+                           required
+                           class="w-full border-gray-200 rounded-xl p-4 focus:ring-uitm-violet focus:border-uitm-violet transition"
+                           placeholder="e.g. Chapter 1: Introduction to Java">
+                </div>
+
+                {{-- Course Code & Faculty --}}
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+                    <div>
+                        <label for="faculty" class="block text-sm font-bold text-gray-700 mb-2">Faculty</label>
+                        <input id="faculty" type="text"
+                               name="faculty"
+                               required
+                               class="w-full border-gray-200 rounded-xl p-4 focus:ring-uitm-violet focus:border-uitm-violet transition"
+                               placeholder="e.g. FSKM">
+                    </div>
+                    <div>
+                        <label for="course_code" class="block text-sm font-bold text-gray-700 mb-2">Course Code</label>
+                        <input id="course_code" type="text"
+                               name="course_code"
+                               required
+                               class="w-full border-gray-200 rounded-xl p-4 focus:ring-uitm-violet focus:border-uitm-violet transition"
+                               placeholder="e.g. CSC404">
+                    </div>
+                </div>
+
+                {{-- Upload Area (Cantik punya design) --}}
+                <div>
+                    <label for="resource_file" class="block text-sm font-bold text-gray-700 mb-2">Resource File</label>
+                    
+                    <div class="relative w-full h-48 bg-blue-50 border-2 border-dashed border-uitm-blue rounded-3xl flex flex-col items-center justify-center hover:bg-blue-100 transition-colors cursor-pointer group">
+                        
+                        {{-- Icon --}}
+                        <div class="bg-white p-4 rounded-full shadow-sm mb-4 group-hover:scale-110 transition-transform">
+                            <svg class="w-8 h-8 text-uitm-blue" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12"></path>
+                            </svg>
+                        </div>
+
+                        <span class="text-uitm-blue font-bold">Click to Upload File</span>
+                        <span class="text-gray-400 text-xs mt-1">PDF, DOCX, PPT, PPTX (Max 10MB)</span>
+
+                        {{-- [PENTING] Input File dengan attribute 'accept' --}}
+                        <input type="file"
+                               name="resource_file"
+                               required
+                               accept=".pdf,.doc,.docx,.ppt,.pptx"
+                               class="absolute inset-0 w-full h-full opacity-0 cursor-pointer">
+                    </div>
+                </div>
+
+                {{-- Action Buttons --}}
+                <div class="flex gap-4 pt-4">
+                    <button type="submit" class="flex-1 bg-uitm-violet text-white py-4 rounded-xl font-bold hover:bg-purple-800 transition shadow-lg shadow-purple-200">
+                        Upload to Repository
+                    </button>
+                    <a href="{{ route('resources.index') }}" class="px-8 py-4 rounded-xl font-bold text-gray-500 hover:bg-gray-100 transition">
+                        Cancel
+                    </a>
+                </div>
+
+            </div>
+        </form>
+    </div>
+</div>
+@endsection
+</file>
+
+<file path="resources/views/resources/index.blade.php">
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <script src="https://cdn.tailwindcss.com"></script>
+    <title>UiTM StudyHub - Resources</title>
+</head>
+<body class="bg-gray-50">
+    <div class="max-w-6xl mx-auto p-6">
+        <div class="flex justify-between items-center mb-8">
+            <h1 class="text-3xl font-bold text-blue-900">UiTM StudyHub</h1>
+            <a href="{{ route('resources.create') }}" class="bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700">Upload New Resource</a>
+        </div>
+
+        @if(session('success'))
+            <div class="bg-green-100 border border-green-400 text-green-700 px-4 py-3 rounded mb-4">
+                {{ session('success') }}
+            </div>
+        @endif
+
+        <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
+            @forelse($resources as $resource)
+                <div class="bg-white p-6 rounded-xl shadow-sm border border-gray-200">
+                    <span class="text-xs font-bold text-blue-500 uppercase">{{ $resource->course_code }}</span>
+                    <h3 class="text-xl font-semibold mt-2">{{ $resource->title }}</h3>
+                    <p class="text-gray-500 text-sm italic">Faculty of {{ $resource->faculty }}</p>
+                    <div class="mt-4 pt-4 border-t flex justify-between items-center">
+                        <span class="text-xs text-gray-400">By {{ $resource->user->name ?? 'User' }}</span>
+                        <a href="{{ asset('storage/' . $resource->file_url) }}" target="_blank" class="text-blue-600 font-medium">Download</a>
+                    </div>
+                </div>
+            @empty
+                <div class="col-span-3 text-center py-10">
+                    <p class="text-gray-500 italic">No resources available. Be the first to upload!</p>
+                </div>
+            @endforelse
+        </div>
+    </div>
+</body>
+</html>
+</file>
+
+<file path="resources/views/resources/my-uploads.blade.php">
+@extends('layouts.app')
+
+@section('content')
+<div class="flex justify-between items-end mb-8">
+    <div>
+        <h2 class="text-3xl font-bold text-uitm-blue">My Uploads</h2>
+        <p class="text-gray-500 font-medium">Manage and track your shared study materials</p>
+    </div>
+    <a href="{{ route('resources.create') }}" class="bg-uitm-violet text-white px-6 py-3 rounded-xl font-bold shadow-lg hover:opacity-90 transition">
+        + Upload New
+    </a>
+</div>
+
+<div class="bg-white rounded-3xl border border-gray-100 shadow-sm overflow-hidden">
+    <table class="w-full text-left">
+        <thead class="bg-gray-50 text-gray-400 text-[10px] uppercase font-bold tracking-widest">
+            <tr>
+                <th class="px-8 py-5">Resource Details</th>
+                <th class="px-8 py-5">Date Uploaded</th>
+                <th class="px-8 py-5">Status</th>
+                <th class="px-8 py-5 text-right">Actions</th>
+            </tr>
+        </thead>
+        <tbody class="divide-y divide-gray-100">
+            @forelse($resources as $res)
+            <tr class="hover:bg-gray-50/50 transition">
+                <td class="px-8 py-5">
+                    <div class="font-bold text-gray-800">{{ $res->title }}</div>
+                    <div class="text-xs text-uitm-blue font-bold opacity-60">{{ $res->course_code }}</div>
+                </td>
+                <td class="px-8 py-5 text-sm text-gray-500">
+                    {{ $res->created_at->format('d M Y') }}
+                </td>
+                <td class="px-8 py-5">
+                    @if($res->status == 'approved')
+                        <span class="bg-green-100 text-green-700 px-3 py-1 rounded-full text-[10px] font-black uppercase">Approved</span>
+                    @elseif($res->status == 'pending')
+                        <span class="bg-amber-100 text-amber-700 px-3 py-1 rounded-full text-[10px] font-black uppercase">Pending</span>
+                    @else
+                        <span class="bg-red-100 text-red-700 px-3 py-1 rounded-full text-[10px] font-black uppercase">Rejected</span>
+                    @endif
+                </td>
+                <td class="px-8 py-5 text-right">
+                    <form action="{{ route('resources.destroy', $res->resources_id) }}" method="POST" onsubmit="return confirm('Delete this resource?')">
+                        @csrf
+                        @method('DELETE')
+                        <button class="text-red-400 hover:text-red-600 transition font-bold text-xs">Delete</button>
+                    </form>
+                </td>
+            </tr>
+            @empty
+            <tr>
+                <td colspan="4" class="px-8 py-20 text-center">
+                    <div class="text-gray-400 italic">You haven't uploaded any resources yet.</div>
+                </td>
+            </tr>
+            @endforelse
+        </tbody>
+    </table>
+</div>
+@endsection
 </file>
 
 <file path="resources/views/welcome.blade.php">
@@ -3826,99 +4650,6 @@ window.axios.defaults.headers.common['X-Requested-With'] = 'XMLHttpRequest';
 </html>
 </file>
 
-<file path="routes/api.php">
-<?php
-
-use Illuminate\Http\Request;
-use Illuminate\Support\Facades\Route;
-
-// Import your Controllers here
-use App\Http\Controllers\Api\ResourceController;
-use App\Http\Controllers\Api\AdminController;
-use App\Http\Controllers\Api\FlashcardDeckController;
-
-/*
-|--------------------------------------------------------------------------
-| Public Routes
-|--------------------------------------------------------------------------
-*/
-// Anyone can browse approved resources without logging in
-Route::get('/resources', [ResourceController::class, 'index']);
-Route::get('/resources/{resources_id}', [ResourceController::class, 'show']);
-
-
-/*
-|--------------------------------------------------------------------------
-| Protected Routes (Requires Login)
-|--------------------------------------------------------------------------
-| The 'auth:sanctum' middleware ensures only users with a valid
-| token (logged in) can access these routes.
-*/
-Route::middleware('auth:sanctum')->group(function () {
-    
-    // Check current logged-in user
-    Route::get('/user', function (Request $request) {
-        return $request->user();
-    });
-
-    // --- Resource Management (Students) ---
-    Route::post('/resources', [ResourceController::class, 'store']); // Upload
-    Route::delete('/resources/{resources_id}', [ResourceController::class, 'destroy']); // Delete own
-    
-    // --- Flashcard Management (Students) ---
-    Route::get('/flashcard-decks', [FlashcardDeckController::class, 'index']);
-    Route::post('/flashcard-decks', [FlashcardDeckController::class, 'store']);
-    Route::get('/flashcard-decks/{deck_id}', [FlashcardDeckController::class, 'show']);
-
-    // --- Admin Only Actions ---
-    // These should ideally use your AdminMiddleware later
-    Route::prefix('admin')->group(function () {
-        Route::post('/resources/{resource}/approve', [AdminController::class, 'approveResource']);
-        Route::get('/users', [AdminController::class, 'viewUserList']);
-    });
-});
-</file>
-
-<file path="routes/auth.php">
-<?php
-
-use App\Http\Controllers\Auth\AuthenticatedSessionController;
-use App\Http\Controllers\Auth\EmailVerificationNotificationController;
-use App\Http\Controllers\Auth\NewPasswordController;
-use App\Http\Controllers\Auth\PasswordResetLinkController;
-use App\Http\Controllers\Auth\RegisteredUserController;
-use App\Http\Controllers\Auth\VerifyEmailController;
-use Illuminate\Support\Facades\Route;
-
-Route::post('/register', [RegisteredUserController::class, 'store'])
-    ->middleware('guest')
-    ->name('register');
-
-Route::post('/login', [AuthenticatedSessionController::class, 'store'])
-    ->middleware('guest')
-    ->name('login');
-
-Route::post('/forgot-password', [PasswordResetLinkController::class, 'store'])
-    ->middleware('guest')
-    ->name('password.email');
-
-Route::post('/reset-password', [NewPasswordController::class, 'store'])
-    ->middleware('guest')
-    ->name('password.store');
-
-Route::get('/verify-email/{id}/{hash}', VerifyEmailController::class)
-    ->middleware(['auth', 'signed', 'throttle:6,1'])
-    ->name('verification.verify');
-
-Route::post('/email/verification-notification', [EmailVerificationNotificationController::class, 'store'])
-    ->middleware(['auth', 'throttle:6,1'])
-    ->name('verification.send');
-
-Route::post('/logout', [AuthenticatedSessionController::class, 'destroy'])
-    ->middleware('auth')
-    ->name('logout');
-</file>
-
 <file path="routes/console.php">
 <?php
 
@@ -3928,6 +4659,27 @@ use Illuminate\Support\Facades\Artisan;
 Artisan::command('inspire', function () {
     $this->comment(Inspiring::quote());
 })->purpose('Display an inspiring quote');
+</file>
+
+<file path="tailwind.config.js">
+/** @type {import('tailwindcss').Config} */
+export default {
+  content: [
+    "./resources/**/*.blade.php",
+    "./resources/**/*.js",
+    "./resources/**/*.vue",
+  ],
+  theme: {
+    extend: {
+      colors: {
+        'uitm-blue': '#012E6F',
+        'uitm-violet': '#753895',
+        'uitm-gold': '#FFD700',
+      },
+    },
+  },
+  plugins: [],
+}
 </file>
 
 <file path="tests/Feature/Auth/AuthenticationTest.php">
@@ -4143,6 +4895,279 @@ export default defineConfig({
         tailwindcss(),
     ],
 });
+</file>
+
+<file path="app/Http/Controllers/Api/ResourceController.php">
+<?php
+
+namespace App\Http\Controllers\Api;
+
+use App\Http\Controllers\Controller;
+use Illuminate\Http\Request;
+use App\Models\Resource;
+use Illuminate\Support\Facades\Auth;
+use Illuminate\Support\Facades\Storage;
+use Illuminate\Validation\ValidationException;
+
+class ResourceController extends Controller
+{
+    /**
+     * Display a listing of the resource.
+     */
+    public function index(Request $request)
+    {
+        $query = Resource::where('status', 'approved');
+
+        // IF the user searched for something, filter the results
+        if ($request->has('search')) {
+            $query->where('course_code', 'LIKE', '%' . $request->search . '%')
+                ->orWhere('title', 'LIKE', '%' . $request->search . '%');
+        }
+
+        $resources = $query->with('user')->get();
+        
+        return view('library', compact('resources'));
+    }
+
+    /**
+     * Show the form for creating a new resource.
+     */
+    public function create()
+    {
+        return view('resources.create');
+    }
+
+    /**
+     * Display the authenticated user's uploaded resources.
+     */
+    public function myUploads()
+    {
+        /** @var \App\Models\User $user */ // <--- This line tells the IDE exactly what $user is
+        $user = Auth::user();
+
+        if (!$user) {
+        return redirect()->route('login');
+        }
+
+        // Now 'resources()' will NOT be undefined because we added it to User.php
+        $resources = $user->resources()->latest()->get();
+    
+        return view('resources.my-uploads', compact('resources'));
+    }
+
+    public function destroy(Resource $resource)
+    {
+        // Use Auth::id() instead of auth()->id() to keep the IDE happy
+    if ($resource->user_id !== Auth::id()) {
+        abort(403);
+    }
+
+    $resource->delete();
+    return back()->with('success', 'Resource deleted successfully.');
+    }
+
+    /**
+     * Store a newly created resource in storage.
+     */
+    public function store(Request $request)
+    {
+        $request->validate([
+            'title' => 'required|string|max:255',
+            'faculty' => 'required|string',
+            'course_code' => 'required|string',
+            'resource_file' => 'required|file|mimes:pdf,docx,ppt,pptx|max:10240', // 10MB limit
+        ]);
+
+        if ($request->hasFile('resource_file')) {
+            $file = $request->file('resource_file');
+            $fileName = time() . '_' . $file->getClientOriginalName();
+            $filePath = $file->storeAs('uploads/resources', $fileName, 'public');
+
+            Resource::create([
+                'title' => $request->title,
+                'description' => $request->description,
+                'faculty' => $request->faculty,
+                'course_code' => $request->course_code,
+                'file_url' => $filePath,
+                'user_id' => Auth::id() ?? 1, // Fallback to ID 1 if not logged in for demo
+                'status' => 'pending', // Needs admin approval
+            ]);
+
+            return redirect()->route('resources.index')->with('success', 'Resource uploaded! Waiting for admin approval.');
+        }
+
+        return back()->with('error', 'File upload failed.');
+    }
+
+    /**
+     * Display the specified resource.
+     */
+    public function show(string $id)
+    {
+        //
+    }
+
+    /**
+     * Update the specified resource in storage.
+     */
+    public function update(Request $request, string $id)
+    {
+        //
+    }
+
+    /**
+     * Force download the resource file.
+     */
+    public function download($id)
+    {
+        $resource = Resource::findOrFail($id);
+        
+        // Pastikan file wujud dalam storage public
+        if (!Storage::disk('public')->exists($resource->file_url)) {
+            return back()->with('error', 'File not found on server.');
+        }
+
+        // Paksa browser download file tu
+        // Argument ke-2 tu untuk set nama file yang cantik bila user download
+        $extension = pathinfo($resource->file_url, PATHINFO_EXTENSION);
+        $fileName = $resource->title . '.' . $extension;
+        return response()->download(storage_path('app/public/' . $resource->file_url), $fileName);
+    }
+
+    /**
+     * View the resource file in browser (Stream).
+     */
+    public function view($id)
+    {
+        $resource = Resource::findOrFail($id);
+
+        if (!Storage::disk('public')->exists($resource->file_url)) {
+            return back()->with('error', 'File not found on server.');
+        }
+
+        // Return file sebagai response supaya browser boleh render (PDF/Image)
+        return response()->file(storage_path('app/public/' . $resource->file_url));
+    }
+}
+</file>
+
+<file path="app/Http/Controllers/Auth/AuthenticatedSessionController.php">
+<?php
+
+namespace App\Http\Controllers\Auth;
+
+use App\Http\Controllers\Controller;
+use App\Http\Requests\Auth\LoginRequest;
+use Illuminate\Http\Request;
+use Illuminate\Http\Response;
+use Illuminate\Http\RedirectResponse;
+use Illuminate\Support\Facades\Auth;
+
+class AuthenticatedSessionController extends Controller
+{
+    /**
+     * Display the login view.
+     */
+    public function create(): \Illuminate\View\View
+    {
+        return view('auth.login');
+    }
+
+    /**
+     * Handle an incoming authentication request.
+     */
+    public function store(LoginRequest $request): RedirectResponse
+    {
+        $request->authenticate();
+
+        $request->session()->regenerate();
+
+        // Check the user role and redirect accordingly
+        if ($request->user()->role === 'admin') {
+            return redirect()->intended('/admin');
+        }
+
+        return redirect()->intended('/library');
+    }
+
+    /**
+     * Destroy an authenticated session.
+     */
+    public function destroy(Request $request): RedirectResponse
+    {
+        Auth::guard('web')->logout();
+
+        $request->session()->invalidate();
+
+        $request->session()->regenerateToken();
+
+        // This is the part that sends the user back to the login page
+        return redirect('/login');
+    }
+}
+</file>
+
+<file path="app/Http/Controllers/Auth/RegisteredUserController.php">
+<?php
+
+namespace App\Http\Controllers\Auth;
+
+use App\Http\Controllers\Controller;
+use App\Models\User;
+use Illuminate\Auth\Events\Registered;
+use Illuminate\Http\Request;
+use Illuminate\Http\Response;
+use Illuminate\Support\Facades\Auth;
+use Illuminate\Support\Facades\Hash;
+use Illuminate\Validation\Rules;
+
+class RegisteredUserController extends Controller
+{
+    /**
+     * Handle an incoming registration request.
+     *
+     * @throws \Illuminate\Validation\ValidationException
+     */
+    public function store(Request $request): Response
+    {
+        $request->validate([
+        'name' => ['required', 'string', 'max:255'],
+        'email' => [
+            'required',
+            'string',
+            'lowercase',
+            'email',
+            'max:255',
+            'unique:'.User::class,
+            // THIS LINE ENFORCES THE DOMAIN
+            'regex:/^[a-zA-Z0-9._%+-]+@student\.uitm\.edu\.my$/i'
+        ],
+        'password' => ['required', 'confirmed', Rules\Password::defaults()],
+        ], [
+            // THIS IS YOUR CUSTOM MESSAGE
+            'email.regex' => 'Please use your @student.uitm.edu.my email address.',
+        ]);
+
+        $user = User::create([
+            'name' => $request->name,
+            'email' => $request->email,
+            'password' => Hash::make($request->string('password')),
+        ]);
+
+        event(new Registered($user));
+
+        Auth::login($user);
+
+        return response()->noContent();
+    }
+    /**
+    * Display the registration view.
+    */
+    public function create(): \Illuminate\View\View
+    {
+        return view('auth.register');
+    }
+}
 </file>
 
 <file path="app/Models/User.php">
@@ -4455,55 +5480,160 @@ return new class extends Migration
 };
 </file>
 
-<file path="routes/web.php">
+<file path="package.json">
+{
+    "$schema": "https://www.schemastore.org/package.json",
+    "private": true,
+    "type": "module",
+    "scripts": {
+        "build": "vite build",
+        "dev": "vite"
+    },
+    "devDependencies": {
+        "@tailwindcss/vite": "^4.0.0",
+        "autoprefixer": "^10.4.23",
+        "axios": "^1.11.0",
+        "concurrently": "^9.0.1",
+        "laravel-vite-plugin": "^2.0.0",
+        "postcss": "^8.5.6",
+        "tailwindcss": "^4.1.18",
+        "vite": "^7.0.7"
+    },
+    "dependencies": {
+        "@tailwindcss/postcss": "^4.1.18"
+    }
+}
+</file>
+
+<file path="resources/css/app.css">
+@import "tailwindcss";
+
+@theme {
+  --color-uitm-blue: #012E6F;
+  --color-uitm-violet: #753895;
+  --color-uitm-gold: #FFD700;
+}
+
+/* custom classes for the Flashcard effect */
+@utility perspective-1000 {
+  perspective: 1000px;
+}
+
+@utility preserve-3d {
+  transform-style: preserve-3d;
+}
+
+@utility backface-hidden {
+  backface-visibility: hidden;
+}
+</file>
+
+<file path="routes/api.php">
 <?php
 
+use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Route;
+
+// Import your Controllers here
 use App\Http\Controllers\Api\ResourceController;
+use App\Http\Controllers\Api\AdminController;
+use App\Http\Controllers\Api\FlashcardDeckController;
 
 /*
 |--------------------------------------------------------------------------
-| Web Routes
+| Public Routes
 |--------------------------------------------------------------------------
 */
+// Anyone can browse approved resources without logging in
+Route::get('/resources', [ResourceController::class, 'index']);
+Route::get('/resources/{resources_id}', [ResourceController::class, 'show']);
 
-// The Home Page - Shows your Library UI
-Route::get('/', [ResourceController::class, 'index'])->name('library');
-
-// Resource Library (Renamed from /resources to /library to match sidebar)
-Route::get('/library', [ResourceController::class, 'index'])->name('resources.index');
-
-// Upload Page
-Route::get('/library/upload', [ResourceController::class, 'create'])->name('resources.create');
-Route::post('/library/upload', [ResourceController::class, 'store'])->name('resources.store');
-
-// Flashcard Creation Page
-Route::get('/flashcards', function () {
-    return view('flashcards.create');
-})->name('flashcards.create');
-
-// My Uploads Page
-Route::get('/my-uploads', [ResourceController::class, 'myUploads'])
-    ->name('resources.my-uploads')
-    ->middleware('auth');
-
-// Add this to fix the "Delete" button in My Uploads
-Route::delete('/resources/{resource}', [ResourceController::class, 'destroy'])->name('resources.destroy')->middleware('auth');
-
-// Make sure your My Uploads route is exactly like this:
-Route::get('/my-uploads', [ResourceController::class, 'myUploads'])->name('resources.my-uploads')->middleware('auth');
-
-// Admin Dashboard (Added for your presentation)
-Route::get('/admin', function () {
-    return view('admin.dashboard'); // This points to resources/views/admin/dashboard.blade.php
-})->name('admin.dashboard');
 
 /*
 |--------------------------------------------------------------------------
-| Authentication Routes
+| Protected Routes (Requires Login)
 |--------------------------------------------------------------------------
+| The 'auth:sanctum' middleware ensures only users with a valid
+| token (logged in) can access these routes.
 */
-require __DIR__.'/auth.php';
+Route::middleware('auth:sanctum')->group(function () {
+    
+    // Check current logged-in user
+    Route::get('/user', function (Request $request) {
+        return $request->user();
+    });
+
+    // --- Resource Management (Students) ---
+    Route::post('/resources', [ResourceController::class, 'store']); // Upload
+    Route::delete('/resources/{resources_id}', [ResourceController::class, 'destroy']); // Delete own
+    
+    // --- Flashcard Management (Students) ---
+    Route::get('/flashcard-decks', [FlashcardDeckController::class, 'index']);
+    Route::post('/flashcard-decks', [FlashcardDeckController::class, 'store']);
+    Route::get('/flashcard-decks/{deck_id}', [FlashcardDeckController::class, 'show']);
+
+    // --- Admin Only Actions ---
+    // These should ideally use your AdminMiddleware later
+    Route::prefix('admin')->group(function () {
+        Route::post('/resources/{resource}/approve', [AdminController::class, 'approveResource']);
+        Route::get('/users', [AdminController::class, 'viewUserList']);
+    });
+});
+</file>
+
+<file path="routes/auth.php">
+<?php
+
+use App\Http\Controllers\Auth\AuthenticatedSessionController;
+use App\Http\Controllers\Auth\EmailVerificationNotificationController;
+use App\Http\Controllers\Auth\NewPasswordController;
+use App\Http\Controllers\Auth\PasswordResetLinkController;
+use App\Http\Controllers\Auth\RegisteredUserController;
+use App\Http\Controllers\Auth\VerifyEmailController;
+use Illuminate\Support\Facades\Route;
+
+Route::middleware('guest')->group(function () {
+    // --- REGISTER ---
+    Route::get('/register', [RegisteredUserController::class, 'create'])
+        ->name('register'); // This SHOWS the register page
+
+    Route::post('/register', [RegisteredUserController::class, 'store']); // This SAVES the user
+
+    // --- LOGIN ---
+    Route::get('/login', [AuthenticatedSessionController::class, 'create'])
+        ->name('login'); // This SHOWS the login page
+
+    Route::post('/login', [AuthenticatedSessionController::class, 'store']); // This LOGS the user in
+
+    // --- FORGOT PASSWORD ---
+    Route::get('/forgot-password', [PasswordResetLinkController::class, 'create'])
+        ->name('password.request');
+
+    Route::post('/forgot-password', [PasswordResetLinkController::class, 'store'])
+        ->name('password.email');
+
+    // --- RESET PASSWORD ---
+    Route::get('/reset-password/{token}', [NewPasswordController::class, 'create'])
+        ->name('password.reset');
+
+    Route::post('/reset-password', [NewPasswordController::class, 'store'])
+        ->name('password.store');
+});
+
+Route::middleware('auth')->group(function () {
+    // --- EMAIL VERIFICATION ---
+    Route::get('/verify-email/{id}/{hash}', VerifyEmailController::class)
+        ->middleware(['signed', 'throttle:6,1'])
+        ->name('verification.verify');
+
+    Route::post('/email/verification-notification', [EmailVerificationNotificationController::class, 'store'])
+        ->middleware('throttle:6,1')
+        ->name('verification.send');
+
+    // --- LOGOUT ---
+    Route::post('/logout', [AuthenticatedSessionController::class, 'destroy'])
+        ->name('logout');
+});
 </file>
 
 <file path="tests/Feature/ExampleTest.php">
@@ -4522,6 +5652,76 @@ test('example', function () {
 test('example', function () {
     expect(true)->toBeTrue();
 });
+</file>
+
+<file path="routes/web.php">
+<?php
+
+use Illuminate\Support\Facades\Auth;
+use Illuminate\Support\Facades\Route;
+use App\Http\Controllers\Api\ResourceController;
+use App\Http\Controllers\Admin\AdminDashboardController;
+use App\Http\Controllers\SettingsController;
+use App\Http\Controllers\ProfileController;
+use App\Http\Controllers\Api\FlashcardDeckController;
+
+/*
+|--------------------------------------------------------------------------
+| Web Routes
+|--------------------------------------------------------------------------
+*/
+
+// --- PUBLIC ROUTES (Tak payah login boleh tengok) ---
+
+// The Home Page - Shows your Library UI
+Route::get('/', [ResourceController::class, 'index'])->name('library');
+
+// Resource Library
+Route::get('/library', [ResourceController::class, 'index'])->name('resources.index');
+
+
+// --- PROTECTED ROUTES (Wajib Login) ---
+Route::middleware(['auth'])->group(function () {
+
+    // 1. Resource Management (Upload, Manage, View, Download)
+    Route::get('/library/upload', [ResourceController::class, 'create'])->name('resources.create');
+    Route::post('/library/upload', [ResourceController::class, 'store'])->name('resources.store');
+    Route::get('/my-uploads', [ResourceController::class, 'myUploads'])->name('resources.my-uploads');
+    Route::delete('/resources/{resource}', [ResourceController::class, 'destroy'])->name('resources.destroy');
+
+    // [BARU] Route untuk Download & View File
+    Route::get('/resources/{id}/download', [ResourceController::class, 'download'])->name('resources.download');
+    Route::get('/resources/{id}/view', [ResourceController::class, 'view'])->name('resources.view');
+
+    // 2. Flashcard Routes (Moved here for security)
+    Route::get('/flashcards', [FlashcardDeckController::class, 'index'])->name('flashcards.index');
+    Route::get('/flashcards/create', [FlashcardDeckController::class, 'create'])->name('flashcards.create');
+    Route::post('/flashcards', [FlashcardDeckController::class, 'store'])->name('flashcards.store');
+    Route::get('/flashcards/{id}', [FlashcardDeckController::class, 'show'])->name('flashcards.show');
+
+    // 3. Profile Management
+    Route::get('/profile', [ProfileController::class, 'edit'])->name('profile.edit');
+    Route::patch('/profile', [ProfileController::class, 'update'])->name('profile.update');
+
+    // 4. Settings (Password & Delete Account)
+    Route::get('/settings', [SettingsController::class, 'edit'])->name('settings.edit');
+    Route::put('/settings/password', [SettingsController::class, 'updatePassword'])->name('settings.password.update');
+    Route::delete('/settings', [SettingsController::class, 'destroy'])->name('settings.destroy');
+
+    // 5. Admin Dashboard (Admin Only)
+    Route::prefix('admin')->group(function () {
+        Route::get('/', [AdminDashboardController::class, 'index'])->name('admin.dashboard');
+        Route::patch('/resources/{id}/status', [AdminDashboardController::class, 'updateStatus'])->name('admin.resources.status');
+    });
+
+});
+
+/*
+|--------------------------------------------------------------------------
+| Authentication Routes
+|--------------------------------------------------------------------------
+*/
+require __DIR__.'/auth.php';
 </file>
 
 </files>

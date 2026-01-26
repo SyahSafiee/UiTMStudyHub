@@ -42,20 +42,28 @@ class ResourceController extends Controller
      */
     public function myUploads()
     {
-        // Fetches ONLY the files belonging to the logged-in student
-        $resources = auth()->user()->resources()->latest()->get();
+        /** @var \App\Models\User $user */ // <--- This line tells the IDE exactly what $user is
+        $user = Auth::user();
+
+        if (!$user) {
+        return redirect()->route('login');
+        }
+
+        // Now 'resources()' will NOT be undefined because we added it to User.php
+        $resources = $user->resources()->latest()->get();
+    
         return view('resources.my-uploads', compact('resources'));
     }
 
     public function destroy(Resource $resource)
     {
-        // Security check: Only allow the owner to delete their own file
-        if ($resource->user_id !== auth()->id()) {
-            abort(403);
-        }
+        // Use Auth::id() instead of auth()->id() to keep the IDE happy
+    if ($resource->user_id !== Auth::id()) {
+        abort(403);
+    }
 
-        $resource->delete();
-        return back()->with('success', 'Resource deleted successfully.');
+    $resource->delete();
+    return back()->with('success', 'Resource deleted successfully.');
     }
 
     /**
@@ -67,7 +75,7 @@ class ResourceController extends Controller
             'title' => 'required|string|max:255',
             'faculty' => 'required|string',
             'course_code' => 'required|string',
-            'resource_file' => 'required|file|mimes:pdf,docx|max:10240', // 10MB limit
+            'resource_file' => 'required|file|mimes:pdf,docx,ppt,pptx|max:10240', // 10MB limit
         ]);
 
         if ($request->hasFile('resource_file')) {
@@ -105,5 +113,39 @@ class ResourceController extends Controller
     public function update(Request $request, string $id)
     {
         //
+    }
+
+    /**
+     * Force download the resource file.
+     */
+    public function download($id)
+    {
+        $resource = Resource::findOrFail($id);
+        
+        // Pastikan file wujud dalam storage public
+        if (!Storage::disk('public')->exists($resource->file_url)) {
+            return back()->with('error', 'File not found on server.');
+        }
+
+        // Paksa browser download file tu
+        // Argument ke-2 tu untuk set nama file yang cantik bila user download
+        $extension = pathinfo($resource->file_url, PATHINFO_EXTENSION);
+        $fileName = $resource->title . '.' . $extension;
+        return response()->download(storage_path('app/public/' . $resource->file_url), $fileName);
+    }
+
+    /**
+     * View the resource file in browser (Stream).
+     */
+    public function view($id)
+    {
+        $resource = Resource::findOrFail($id);
+
+        if (!Storage::disk('public')->exists($resource->file_url)) {
+            return back()->with('error', 'File not found on server.');
+        }
+
+        // Return file sebagai response supaya browser boleh render (PDF/Image)
+        return response()->file(storage_path('app/public/' . $resource->file_url));
     }
 }

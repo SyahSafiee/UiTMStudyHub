@@ -41,7 +41,7 @@
                     @endif
                 </td>
                 <td class="px-8 py-5 text-right">
-                    <form action="{{ route('resources.destroy', $res->id) }}" method="POST" onsubmit="return confirm('Delete this resource?')">
+                    <form action="{{ route('resources.destroy', $res->resources_id) }}" method="POST" onsubmit="return confirm('Delete this resource?')">
                         @csrf
                         @method('DELETE')
                         <button class="text-red-400 hover:text-red-600 transition font-bold text-xs">Delete</button>
