@@ -93,8 +93,8 @@ class AdminDashboardController extends Controller
                             ->subject('UiTM StudyHub: Your Resource is Approved!');
                 });
             } catch (\Exception $e) {
-                // Diamkan error supaya dashboard tak sangkut kalau Gmail block
-                // \Log::error('Email Error: ' . $e->getMessage());
+                // PADAM COMMENT DI BAWAH NI UNTUK TENGOK ERROR
+                dd($e->getMessage());
             }
         }
         // =========================================================
