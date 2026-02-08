@@ -7,6 +7,7 @@ use App\Models\Resource;
 use App\Models\User;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Mail; // Wajib ada untuk hantar email
+use Illuminate\Support\Facades\Storage;
 
 class AdminDashboardController extends Controller
 {
@@ -104,5 +105,26 @@ class AdminDashboardController extends Controller
             : '❌ Resource has been rejected.';
 
         return back()->with('success', $message);
+    }
+
+    /**
+     * View the file of a resource (Admin).
+     */
+    public function viewFile($id)
+    {
+        // Find the resource using your primary key 'resources_id'
+        $resource = Resource::findOrFail($id);
+        
+        // Get the path from storage (assuming you use the 'public' disk)
+        $path = storage_path('app/public/' . $resource->file_url);
+
+        if (!file_exists($path)) {
+            abort(404, 'File not found.');
+        }
+
+        // response()->file() sets the Content-Disposition to 'inline' by default
+        return response()->file($path, [
+            'Content-Type' => 'application/pdf',
+        ]);
     }
 }

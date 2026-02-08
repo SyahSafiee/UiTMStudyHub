@@ -55,6 +55,7 @@ Route::middleware(['auth'])->group(function () {
     Route::prefix('admin')->group(function () {
         Route::get('/', [AdminDashboardController::class, 'index'])->name('admin.dashboard');
         Route::patch('/resources/{id}/status', [AdminDashboardController::class, 'updateStatus'])->name('admin.resources.status');
+        Route::get('/resources/{id}/view', [AdminDashboardController::class, 'viewFile'])->name('admin.resources.view');
     });
 
 });
